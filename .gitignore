@@ -1,0 +1,42 @@
+########################
+# Python
+########################
+__pycache__/
+*.py[cod]
+
+########################
+# Virtual Environments
+########################
+venv/
+.venv/
+cycle_data_parser/venv/
+.env
+
+########################
+# Generated Outputs
+########################
+*.html
+logs/
+*.log
+
+########################
+# Data / External Inputs
+########################
+data/
+garmin/
+strava/
+OCR/
+
+########################
+# IDE / OS
+########################
+.vscode/
+.idea/
+.DS_Store
+########################
+# Editor / Temp files
+########################
+*~
+**/1
+~project
+Running
