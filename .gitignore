@@ -40,3 +40,9 @@ OCR/
 **/1
 ~project
 Running
+riding_data_parser/randonneurs/*.deb
+token.json
+credentials.json
+client_secret_*.json
+health/scripts/google_fit_nutrition_batch.py
+health/scripts/google_fit_nutrition_batch.py.bak

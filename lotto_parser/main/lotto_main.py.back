@@ -1,0 +1,203 @@
+from sqlalchemy import create_engine, text
+import requests
+import json
+import socket
+import random
+from datetime import datetime
+from services.kakao_notify_service import notify_text, generate_lotto_sets
+
+# ======================================================
+# ✅ DB 연결 설정 (Docker / Local 자동 인식)
+# ======================================================
+def detect_db_env():
+    try:
+        socket.gethostbyname("lotto-db")
+        return "lotto-db", 3306, "🐳 Docker"
+    except socket.gaierror:
+        return "127.0.0.1", 3307, "☁️ Local(GCP VM)"
+
+
+def build_db_url(host, port):
+    return f"mysql+pymysql://lotto:lotto1234!@{host}:{port}/lotto"
+
+
+# ======================================================
+# ✅ 공식 JSON API (전체 회차)
+# ======================================================
+def fetch_all_lotto():
+    url = "https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do"
+    params = {
+        "srchLtEpsd": "all",
+        "_": int(datetime.now().timestamp() * 1000)
+    }
+
+    resp = requests.get(url, params=params, timeout=10)
+    resp.raise_for_status()
+
+    data = resp.json()
+    return data.get("data", {}).get("list", [])
+
+
+# ======================================================
+# ✅ lotto_number 저장
+# ======================================================
+def insert_lotto_numbers(engine, items):
+    inserted = 0
+    with engine.begin() as conn:
+        for it in items:
+            result = conn.execute(text("""
+                INSERT IGNORE INTO lotto_number (
+                    id, num1, num2, num3, num4, num5, num6, bonus,
+                    first_accumamnt, second_accumamnt, third_accumamnt,
+                    fourth_accumamnt, fifth_accumamnt,
+                    first_przwner_col, second_przwner_col, third_przwner_col,
+                    fourth_przwner_col, fifth_przwner_col,
+                    first_winamnt, second_winamnt, third_winamnt,
+                    fourth_winamnt, fifth_winamnt,
+                    no_date, total_sell
+                ) VALUES (
+                    :id, :n1, :n2, :n3, :n4, :n5, :n6, :bonus,
+                    :a1, :a2, :a3, :a4, :a5,
+                    :p1, :p2, :p3, :p4, :p5,
+                    :w1, :w2, :w3, :w4, :w5,
+                    :date, :total
+                )
+            """), {
+                "id": it["ltEpsd"],
+                "n1": it["tm1WnNo"], "n2": it["tm2WnNo"], "n3": it["tm3WnNo"],
+                "n4": it["tm4WnNo"], "n5": it["tm5WnNo"], "n6": it["tm6WnNo"],
+                "bonus": it["bnsWnNo"],
+                "a1": it["rnk1SumWnAmt"], "a2": it["rnk2SumWnAmt"],
+                "a3": it["rnk3SumWnAmt"], "a4": it["rnk4SumWnAmt"],
+                "a5": it["rnk5SumWnAmt"],
+                "p1": it["rnk1WnNope"], "p2": it["rnk2WnNope"],
+                "p3": it["rnk3WnNope"], "p4": it["rnk4WnNope"],
+                "p5": it["rnk5WnNope"],
+                "w1": it["rnk1WnAmt"], "w2": it["rnk2WnAmt"],
+                "w3": it["rnk3WnAmt"], "w4": it["rnk4WnAmt"],
+                "w5": it["rnk5WnAmt"],
+                "date": datetime.strptime(it["ltRflYmd"], "%Y%m%d").date(),
+                "total": it["wholEpsdSumNtslAmt"]
+            })
+
+            if result.rowcount == 1:
+                inserted += 1
+
+    print(f"✅ lotto_number 신규 저장: {inserted}회차")
+    return inserted
+
+
+# ======================================================
+# ✅ range_of 계산
+# ======================================================
+def calc_range_of(nums):
+    r = {"0_9":0,"10_19":0,"20_29":0,"30_39":0,"40_45":0}
+    for n in nums:
+        if n <= 9: r["0_9"] += 1
+        elif n <= 19: r["10_19"] += 1
+        elif n <= 29: r["20_29"] += 1
+        elif n <= 39: r["30_39"] += 1
+        else: r["40_45"] += 1
+    return json.dumps(r, ensure_ascii=False)
+
+
+# ======================================================
+# ✅ lotto_analysis 생성 (없는 회차만)
+# ======================================================
+def generate_lotto_analysis(engine):
+    with engine.begin() as conn:
+        rows = conn.execute(text("""
+            SELECT ln.id, ln.num1, ln.num2, ln.num3,
+                   ln.num4, ln.num5, ln.num6, ln.no_date
+            FROM lotto_number ln
+            LEFT JOIN lotto_analysis la ON ln.id = la.id
+            WHERE la.id IS NULL
+            ORDER BY ln.id
+        """)).fetchall()
+
+        if not rows:
+            print("ℹ️ lotto_analysis 생성 대상 없음")
+            return 0
+
+        print(f"🧠 lotto_analysis 생성 대상: {len(rows)}회차")
+
+        for r in rows:
+            nums = [r.num1, r.num2, r.num3, r.num4, r.num5, r.num6]
+
+            odd = [n for n in nums if n % 2]
+            even = [n for n in nums if n % 2 == 0]
+            high = [n for n in nums if n >= 23]
+            low = [n for n in nums if n < 23]
+
+            conn.execute(text("""
+                INSERT INTO lotto_analysis (
+                    id, sum, high_low, odd_even,
+                    start_sum, end_sum,
+                    high_sum, low_sum,
+                    one_three, four_six,
+                    odd_sum, even_sum,
+                    range_of, no_date
+                ) VALUES (
+                    :id, :sum, :hl, :oe,
+                    :ss, :es,
+                    :hs, :ls,
+                    :ot, :fs,
+                    :os, :esum,
+                    :range, :date
+                )
+            """), {
+                "id": r.id,
+                "sum": sum(nums),
+                "hl": f"{len(high)}:{len(low)}",
+                "oe": f"{len(odd)}:{len(even)}",
+                "ss": sum(n//10 for n in nums),
+                "es": sum(n%10 for n in nums),
+                "hs": sum(high),
+                "ls": sum(low),
+                "ot": sum(nums[:3]),
+                "fs": sum(nums[3:]),
+                "os": sum(odd),
+                "esum": sum(even),
+                "range": calc_range_of(nums),
+                "date": r.no_date
+            })
+
+        print("✅ lotto_analysis 생성 완료")
+        return len(rows)
+
+
+# ======================================================
+# ✅ main
+# ======================================================
+def main():
+    host, port, env = detect_db_env()
+    print(f"🛰️ DB 환경: {env} → {host}:{port}")
+
+    engine = create_engine(build_db_url(host, port), echo=False)
+
+    print("🎰 로또 전체 데이터 수집 시작")
+    items = fetch_all_lotto()
+    print(f"📦 API 수신 회차 수: {len(items)}")
+
+    inserted_cnt = insert_lotto_numbers(engine, items)
+    analysis_cnt = generate_lotto_analysis(engine)
+
+    # ✅ 카카오 알림
+    msg = (
+        f"🎰 로또 DB 업데이트 완료!\n\n"
+        f"📦 API 수신 회차: {len(items)}\n"
+        f"🆕 신규 저장 회차: {inserted_cnt}\n"
+        f"🧠 분석 생성 회차: {analysis_cnt}\n\n"
+        f"✨ 이번 주 추천 번호 ✨\n"
+        f"{generate_lotto_sets()}"
+    )
+
+    print("📢 카카오 알림 전송 중...")
+    notify_text(msg)
+
+    print("🎉 전체 파이프라인 완료")
+
+
+if __name__ == "__main__":
+    main()
+
