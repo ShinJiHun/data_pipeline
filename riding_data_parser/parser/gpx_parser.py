@@ -34,11 +34,11 @@ def parse_gpx(file_path):
                 lat_list.append(p.latitude)
                 lon_list.append(p.longitude)
                 ele_list.append(p.elevation or 0.0)
-                time_list.append(p.time.astimezone(KST))
+                time_list.append(ts.replace(tzinfo=timezone.utc).astimezone(KST))
 
     if len(lat_list) < 2:
         print(f"⚠️ GPS 포인트 부족 ({len(lat_list)}개) - 스킵: {file_path}")
-        return None, None
+        return None, None, []
 
     # --------------------------------------------------
     # PASS1 slope = 0
@@ -57,7 +57,7 @@ def parse_gpx(file_path):
     total_distance_km = metrics["total_distance"] / 1000
     if total_distance_km < MIN_DISTANCE_KM:
         print(f"⚠️ 거리 미달 ({total_distance_km:.1f}km < {MIN_DISTANCE_KM}km) - 스킵: {file_path}")
-        return None, None
+        return None, None, []
 
     # --------------------------------------------------
     # speed
@@ -183,4 +183,4 @@ def parse_gpx(file_path):
             )
         )
 
-    return core, points
+    return core, points, []

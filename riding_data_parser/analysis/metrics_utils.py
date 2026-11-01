@@ -146,15 +146,36 @@ def compute_basic_metrics(lat, lon, ele, ts):
 # --------------------------------------
 # Virtual Power 계산
 # --------------------------------------
+VP_MAX_SPEED_MS = 25.0      # 90km/h 초과는 GPS 튐으로 보고 자름
+VP_SMOOTH_WINDOW = 5        # 속도 이동 중앙값 윈도우 (포인트 수)
+VP_MAX_ACCEL = 1.5          # |dv/dt| 상한 (m/s²) — 자전거로 낼 수 있는 가감속 수준
+VP_MAX_SLOPE = 25.0         # 경사 상한 (%)
+VP_MAX_POWER = 1200.0       # 추정 파워 상한 (W)
+
+
+def _smooth_speeds(speed_list):
+    """GPS 속도 튐 제거: 상한 클램프 후 이동 중앙값."""
+    clamped = [min(max(v or 0.0, 0.0), VP_MAX_SPEED_MS) for v in speed_list]
+    half = VP_SMOOTH_WINDOW // 2
+    out = []
+    for i in range(len(clamped)):
+        window = sorted(clamped[max(0, i - half):i + half + 1])
+        out.append(window[len(window) // 2])
+    return out
+
+
 def compute_virtual_power(speed_list, slope_list, dt_list,
                           mass=95, Crr=0.004, CdA=0.32, rho=1.226):
+    """speed_list는 m/s. 속도 튐/가속 항 폭주를 막기 위해 평활화·상한을 적용한다."""
     g = 9.80665
     powers = []
-    prev_v = speed_list[0]
+    speed_list = _smooth_speeds(speed_list)
+    prev_v = speed_list[0] if speed_list else 0.0
 
     for i in range(len(speed_list)):
         v = speed_list[i]
-        slope = slope_list[i] / 100.0 if i < len(slope_list) else 0
+        slope = slope_list[i] if i < len(slope_list) and slope_list[i] is not None else 0
+        slope = min(max(slope, -VP_MAX_SLOPE), VP_MAX_SLOPE) / 100.0
         dt = dt_list[i]
 
         # 구름저항
@@ -168,10 +189,11 @@ def compute_virtual_power(speed_list, slope_list, dt_list,
 
         # 가속도 파워
         dv = (v - prev_v) / dt if dt > 0 else 0
+        dv = min(max(dv, -VP_MAX_ACCEL), VP_MAX_ACCEL)
         P_acc = mass * dv * v
         prev_v = v
 
-        total_p = max(0, P_roll + P_gravity + P_aero + P_acc)
+        total_p = min(max(0, P_roll + P_gravity + P_aero + P_acc), VP_MAX_POWER)
         powers.append(total_p)
 
     return powers

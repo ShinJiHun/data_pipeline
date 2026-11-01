@@ -96,12 +96,24 @@ class ActivityCore(Base):
     flat_distance = Column(Float)
     down_distance = Column(Float)
 
+    # 코스 난이도 (analysis/difficulty_utils.py)
+    avg_uphill_grade = Column(Float)     # 오르막 평균 경사 %
+    max_grade_1km = Column(Float)        # 최대 1km 지속 경사 %
+    climb_load = Column(Float)           # 경사 가중 상승고도 m
+    difficulty_score = Column(Float)     # 평지 환산 거리 km
+    difficulty_level = Column(Integer)   # 1~5
+
     avg_power_weather_adj = Column(Float)
     total_work_weather_adj_kj = Column(Float)
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     has_power = Column(Boolean, default=False)
+
+    # 업로드 시 프론트에서 선택한 라이딩 타입/퍼머넌트 코스 (LifeMetrics 업로드 팝업에서 전달)
+    ride_type = Column(String(20))
+    permanent_no = Column(String(20))
+    permanent_gpx_file = Column(String(255))
 
 
 # =========================================================
@@ -358,3 +370,86 @@ class Bike(Base):
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+# =========================================================
+# ⚙️ GearUsage (기어 사용 구간)
+# =========================================================
+class GearUsage(Base):
+    __tablename__ = "gear_usage"
+ 
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_core_id = Column(BigInteger, ForeignKey("activity_core.id"), nullable=False)
+ 
+    front_gear = Column(Integer, nullable=False)   # 실제 이빨 수 (예: 53)
+    rear_gear = Column(Integer, nullable=False)    # 실제 이빨 수 (예: 15)
+    gear_ratio = Column(Float)
+ 
+    terrain = Column(String(10), nullable=False)   # 'uphill' / 'flat' / 'downhill'
+ 
+    duration_sec = Column(Float, nullable=False, default=0)
+    distance = Column(Float, nullable=False, default=0)
+    avg_power = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.now)
+
+
+# =========================================================
+# ⛰ ActivityTerrain (지형별 요약: 업힐/평지/다운힐)
+# =========================================================
+class ActivityTerrain(Base):
+    __tablename__ = "activity_terrain"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_core_id = Column(BigInteger, ForeignKey("activity_core.id", ondelete="CASCADE"), nullable=False)
+
+    terrain = Column(String(10), nullable=False)   # 'UPHILL' / 'FLAT' / 'DOWNHILL'
+
+    distance = Column(Float, nullable=False, default=0)   # m
+    distance_ratio = Column(Float)                        # 전체 거리 대비 %
+    moving_time_sec = Column(Integer)
+    elevation_gain = Column(Float)                        # m
+    elevation_loss = Column(Float)                        # m
+    avg_grade = Column(Float)                             # %
+    avg_speed = Column(Float)                             # km/h
+
+    avg_power = Column(Float)            # 이동 시간 평균 (코스팅 0W 포함)
+    avg_power_pedaling = Column(Float)   # 파워 > 0 구간만 평균
+    avg_heart_rate = Column(Float)
+    avg_cadence = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.now)
+
+
+# =========================================================
+# 🗺 Region (행정구역: 시/도 - 시/군/구)
+# =========================================================
+class Region(Base):
+    __tablename__ = "region"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    level = Column(Integer, nullable=False)  # 1=시/도, 2=시/군/구
+    parent_id = Column(BigInteger, ForeignKey("region.id"))
+    code = Column(String(10), nullable=False, unique=True)  # 법정동코드 (시도 2자리 / 시군구 5자리)
+    name = Column(String(50), nullable=False)        # "수원시"
+    full_name = Column(String(100), nullable=False)  # "경기도 수원시"
+    center_lat = Column(Float)
+    center_lon = Column(Float)
+    # boundary GEOMETRY 컬럼은 raw DDL로 생성되며 ORM에는 매핑하지 않음.
+    # ST_Contains 등 공간 함수로만 다룸 (mapUtil/setup_region_tables.py, mapUtil/load_region_boundaries.py 참고)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# =========================================================
+# 🗺 ActivityRegion (라이딩이 통과한 행정구역)
+# =========================================================
+class ActivityRegion(Base):
+    __tablename__ = "activity_region"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_core_id = Column(BigInteger, ForeignKey("activity_core.id", ondelete="CASCADE"), nullable=False)
+    region_id = Column(BigInteger, ForeignKey("region.id"), nullable=False)
+    point_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+
+

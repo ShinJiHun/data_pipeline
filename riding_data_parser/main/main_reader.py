@@ -3,7 +3,7 @@ import shutil
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from riding_data_parser.parser.fit_parser import parse_fit
+from riding_data_parser.parser.fit_parser import parse_fit, parse_multiple_fits
 from riding_data_parser.parser.gpx_parser import parse_gpx
 from riding_data_parser.parser.tcx_parser import parse_tcx
 from riding_data_parser.services.activity_save_service import ActivitySaveService
@@ -20,14 +20,14 @@ def process_file(db, file_path, parser_func, saver):
     성공 시 True, 실패 시 False를 반환한다.
     """
     try:
-        core, points = parser_func(file_path)
+        core, points, gear_usages = parser_func(file_path)
 
         # 스킵된 파일 (indoor 등) → 성공으로 처리
         if core is None:
             print(f"  ⏭️ 스킵 (indoor 등): {os.path.basename(file_path)}")
             return True
 
-        saver.save_with_points(core, points)
+        saver.save_with_points(core, points, gear_usages)
         return True
 
     except Exception as e:
@@ -127,7 +127,7 @@ def main():
     print(f"   전체: {total} | 성공: {success} | 실패: {fail}")
     print(f"{'='*40}")
 
-def process_single_file(file_path: str, user_id: int = 1):
+def process_single_file(file_path: str, user_id: int = 1, ride_type: str = None, permanent_no: str = None, permanent_gpx_file: str = None):
     db_url = os.getenv("PYTHON_DB_URL")
     if not db_url:
         raise RuntimeError("DB_URL 환경변수가 설정되지 않았습니다.")
@@ -150,11 +150,14 @@ def process_single_file(file_path: str, user_id: int = 1):
         raise ValueError(f"지원하지 않는 파일 형식: {ext}")
 
     try:
-        core, points = parser_func(file_path)
+        core, points, gear_usages = parser_func(file_path)
         if core is None:
             return None  # 스킵
         core.user_id = user_id
-        saver.save_with_points(core, points)
+        core.ride_type = ride_type
+        core.permanent_no = permanent_no
+        core.permanent_gpx_file = permanent_gpx_file
+        saver.save_with_points(core, points, gear_usages)
         base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/fit/")
         folder_name = ext.lstrip(".")
         dest_dir = os.path.join(base_dir, f"{folder_name}_suc")
@@ -165,6 +168,49 @@ def process_single_file(file_path: str, user_id: int = 1):
         folder_name = ext.lstrip(".")
         dest_dir = os.path.join(base_dir, f"{folder_name}_fail")
         move_file(file_path, dest_dir)
+        raise e
+    finally:
+        db.close()
+
+def process_multiple_files(file_path_list: list, user_id: int = 1, ride_type: str = None, permanent_no: str = None, permanent_gpx_file: str = None):
+    """
+    여러 개의 파일 경로를 받아 병합 처리한 후 DB에 저장하고, 
+    성공 시 파일을 _suc 폴더로 이동한 뒤 activity_core_id를 반환한다.
+    """
+    db_url = os.getenv("PYTHON_DB_URL")
+    if not db_url:
+        raise RuntimeError("DB_URL 환경변수가 설정되지 않았습니다.")
+
+    engine = create_engine(db_url, pool_pre_ping=True, future=True)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False)
+    db = SessionLocal()
+    saver = ActivitySaveService(db)
+
+    try:
+        # 현재는 FIT 파일 다중 병합을 지원
+        core, points, gear_usages = parse_multiple_fits(file_path_list)
+        if core is None:
+            return None  # 스킵된 경우
+
+        core.user_id = user_id
+        core.ride_type = ride_type
+        core.permanent_no = permanent_no
+        core.permanent_gpx_file = permanent_gpx_file
+        saver.save_with_points(core, points, gear_usages)
+
+        # 성공한 모든 파일을 fit_suc 폴더로 이동
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+        suc_dir = os.path.join(base_dir, "fit_suc")
+        for fp in file_path_list:
+            move_file(fp, suc_dir)
+
+        return core.id
+    except Exception as e:
+        # 실패 시 모든 파일을 fit_fail 폴더로 이동
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+        fail_dir = os.path.join(base_dir, "fit_fail")
+        for fp in file_path_list:
+            move_file(fp, fail_dir)
         raise e
     finally:
         db.close()
