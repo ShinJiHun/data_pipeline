@@ -2,12 +2,15 @@ import os
 import json
 import requests
 import random
+from dotenv import load_dotenv, find_dotenv
 
 # ===============================
 # ✅ 카카오 REST API 인증 정보
 # ===============================
-REST_API_KEY = "7c283bcb5b7b143989d916778e37ae69"
-REFRESH_TOKEN = "BBt-BE3qs84UNOL8wja53eSmIYktwHcJAAAAAgoNIBsAAAGaOUX5R1v0-avl6D9k"
+# 값은 data_pipeline/.env 에 둔다 (KAKAO_REST_API_KEY, KAKAO_REFRESH_TOKEN)
+load_dotenv(find_dotenv())
+REST_API_KEY = os.environ["KAKAO_REST_API_KEY"]
+REFRESH_TOKEN = os.environ["KAKAO_REFRESH_TOKEN"]
 
 
 # ===============================

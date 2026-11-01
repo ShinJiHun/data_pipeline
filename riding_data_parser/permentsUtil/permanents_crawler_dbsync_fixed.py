@@ -5,23 +5,26 @@ import urllib.parse
 from bs4 import BeautifulSoup
 import pymysql
 from time import sleep
+from dotenv import load_dotenv, find_dotenv
 
 # ==========================================
 # ✅ DB 설정
 # ==========================================
+load_dotenv(find_dotenv())
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "tho881",
-    "password": "ride1234!",
-    "database": "riding_db",
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", "3306")),
+    "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+    "database": os.getenv("DB_NAME", "riding_db"),
     "charset": "utf8mb4",
 }
 
 # ==========================================
 # ✅ API 설정
 # ==========================================
-KAKAO_REST_API_KEY = "7c283bcb5b7b143989d916778e37ae69"
-GOOGLE_API_KEY = "여기에_구글_API_키"
+KAKAO_REST_API_KEY = os.environ["KAKAO_REST_API_KEY"]
+GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 
 KAKAO_LOCAL_URL = "https://dapi.kakao.com/v2/local/search/address.json"
 GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
