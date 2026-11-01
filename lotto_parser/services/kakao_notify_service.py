@@ -11,6 +11,7 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 REST_API_KEY = os.environ["KAKAO_REST_API_KEY"]
 REFRESH_TOKEN = os.environ["KAKAO_REFRESH_TOKEN"]
+CLIENT_SECRET = os.getenv("KAKAO_CLIENT_SECRET")  # 콘솔 [보안] Client Secret 사용 시에만
 
 
 # ===============================
@@ -23,6 +24,8 @@ def get_access_token():
         "client_id": REST_API_KEY,
         "refresh_token": REFRESH_TOKEN,
     }
+    if CLIENT_SECRET:
+        data["client_secret"] = CLIENT_SECRET
     res = requests.post(url, data=data)
     if res.status_code != 200:
         raise Exception(f"Kakao token refresh failed: {res.text}")
