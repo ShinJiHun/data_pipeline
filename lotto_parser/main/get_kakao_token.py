@@ -82,10 +82,14 @@ def save_refresh_token(token: str) -> None:
 
 
 def main():
-    print("1) 아래 URL 을 브라우저에서 열고 동의하세요:\n")
-    print("   " + build_authorize_url() + "\n")
-    print(f"2) {REDIRECT_URI}?code=... 로 이동합니다 (페이지가 안 열려도 정상).")
-    raw = input("   주소창의 전체 주소 또는 code 값을 붙여넣으세요: ")
+    # 인자로 code(또는 리다이렉트된 전체 주소)를 주면 바로 교환한다: get_kakao_token.py "<주소>"
+    if len(sys.argv) > 1:
+        raw = sys.argv[1]
+    else:
+        print("1) 아래 URL 을 브라우저에서 열고 동의하세요:\n")
+        print("   " + build_authorize_url() + "\n")
+        print(f"2) {REDIRECT_URI}?code=... 로 이동합니다 (페이지가 안 열려도 정상).")
+        raw = input("   주소창의 전체 주소 또는 code 값을 붙여넣으세요: ")
     tokens = exchange_code(extract_code(raw))
     refresh = tokens.get("refresh_token")
     if not refresh:
