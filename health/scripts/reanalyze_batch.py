@@ -5,19 +5,42 @@ LifeMetrics - LLM 재분석 배치
 사용법:
     python reanalyze_batch.py --type inbody    # user_body_record 재분석
     python reanalyze_batch.py --type fitdays   # user_fitdays_record 재분석
+    python reanalyze_batch.py --type health_exam   # health_checkup 재분석 (llm_analysis)
     python reanalyze_batch.py --type inbody --id 5   # 특정 레코드만
 """
 
 import os
+import sys
 import json
 import time
 import argparse
 import pymysql
-import anthropic
 from datetime import datetime
-from dotenv import load_dotenv
 
-load_dotenv("/mnt/200gb/apps/.env")
+sys.path.insert(0, "/mnt/200gb/project")
+from data_pipeline.claude_config import client, CLAUDE_MODEL, extract_text
+
+sys.path.insert(0, "/mnt/200gb/project/data_pipeline/health")
+from services.inbody_pipeline_service import ANALYSIS_SCHEMA as BODY_SCHEMA
+from services.health_exam_pipeline_service import (
+    ANALYSIS_SCHEMA as HEALTH_EXAM_SCHEMA,
+    build_llm_prompt as build_health_exam_prompt,
+)
+
+
+def call_json(system: str, prompt: str, schema: dict, max_tokens: int) -> dict:
+    """structured outputs로 스키마에 맞는 JSON을 강제해서 호출
+    (max_tokens는 thinking 토큰까지 포함, output_config는 SDK 0.75에 인자가 없어서 extra_body로 전달)"""
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+        extra_body={"output_config": {"format": {"type": "json_schema", "schema": schema}}},
+    )
+    if response.stop_reason == "max_tokens":
+        raise ValueError("응답이 max_tokens에서 잘림")
+    return json.loads(extract_text(response))
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "172.17.0.1"),
@@ -27,9 +50,6 @@ DB_CONFIG = {
     "database": "riding_db",
     "charset":  "utf8mb4",
 }
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def get_profile(conn):
@@ -111,18 +131,7 @@ def build_prompt(current: dict, prev: dict | None, profile: dict) -> str:
 def call_llm(current: dict, prev: dict | None, profile: dict) -> dict | None:
     try:
         prompt = build_prompt(current, prev, profile)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            system="체성분 및 사이클 퍼포먼스 전문 분석가. 순수 JSON만 응답.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        t = response.content[0].text.strip()
-        if t.startswith("```"):
-            t = t.split("```")[1]
-            if t.startswith("json"):
-                t = t[4:]
-        return json.loads(t.strip())
+        return call_json("체성분 및 사이클 퍼포먼스 전문 분석가.", prompt, BODY_SCHEMA, 4000)
     except Exception as e:
         print(f"  ❌ LLM 실패: {e}")
         return None
@@ -222,6 +231,57 @@ def run_fitdays(conn, target_id=None):
             time.sleep(1.5)
 
 
+# ────────────────────────────────────────────
+# health_exam 재분석
+# ────────────────────────────────────────────
+
+def call_llm_health_exam(current: dict, prev: dict | None, all_records: list) -> dict | None:
+    try:
+        prompt = build_health_exam_prompt(current, prev, all_records)
+        return call_json("건강검진 데이터 분석 전문가. 시계열 건강 변화를 분석.", prompt, HEALTH_EXAM_SCHEMA, 6000)
+    except Exception as e:
+        print(f"  ❌ LLM 실패: {e}")
+        return None
+
+
+def run_health_exam(conn, target_id=None):
+    print("\n[건강검진 재분석 시작]")
+    # --id 지정 시에도 이전 검진/이력이 프롬프트에 들어가도록 전체를 읽고 대상만 골라서 처리
+    with conn.cursor() as c:
+        c.execute("""
+            SELECT *
+            FROM health_checkup
+            WHERE user_id = 1
+            ORDER BY checkup_date ASC
+        """)
+        rows = list(c.fetchall())
+
+    targets = [i for i, r in enumerate(rows) if target_id is None or r["id"] == target_id]
+    print(f"총 {len(targets)}개 처리")
+
+    for n, i in enumerate(targets):
+        rec = rows[i]
+        prev = rows[i - 1] if i > 0 else None
+        all_records = rows[:i + 1]
+        print(f"\n[{n+1:02d}/{len(targets)}] {rec['checkup_date']}", end=" ... ")
+
+        result = call_llm_health_exam(rec, prev, all_records)
+        if not result:
+            continue
+
+        result["analyzed_at"] = datetime.now().isoformat()
+        with conn.cursor() as c:
+            c.execute(
+                "UPDATE health_checkup SET llm_analysis = %s, updated_at = NOW() WHERE id = %s",
+                (json.dumps(result, ensure_ascii=False), rec["id"])
+            )
+        conn.commit()
+        print(f"✅ {result.get('summary', '')}")
+
+        if n < len(targets) - 1:
+            time.sleep(1.5)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", choices=["inbody", "fitdays", "health_exam"], required=True)
@@ -234,7 +294,7 @@ def main():
             run_inbody(conn, target_id=args.id)
         elif args.type == "fitdays":
             run_fitdays(conn, target_id=args.id)
-        elif args.rype == "health_exam":
+        elif args.type == "health_exam":
             run_health_exam(conn, target_id=args.id)
     finally:
         conn.close()
@@ -244,325 +304,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# ────────────────────────────────────────────
-# health_exam 재분석
-# ────────────────────────────────────────────
-def run_health_exam(conn, target_id=None):
-    print("\n[건강검진 재분석 시작]")
-    with conn.cursor() as c:
-        if target_id:
-            c.execute("""
-                SELECT id, exam_date, exam_place,
-                       height_cm, weight_kg, bmi, waist_cm,
-                       systolic_bp, diastolic_bp,
-                       hemoglobin, fasting_glucose,
-                       total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglyceride,
-                       creatinine, egfr, ast, alt, ggt,
-                       urine_protein, overall_result, note
-                FROM user_health_exam
-                WHERE user_id = 1 AND id = %s
-                ORDER BY exam_date ASC
-            """, (target_id,))
-        else:
-            c.execute("""
-                SELECT id, exam_date, exam_place,
-                       height_cm, weight_kg, bmi, waist_cm,
-                       systolic_bp, diastolic_bp,
-                       hemoglobin, fasting_glucose,
-                       total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglyceride,
-                       creatinine, egfr, ast, alt, ggt,
-                       urine_protein, overall_result, note
-                FROM user_health_exam
-                WHERE user_id = 1
-                ORDER BY exam_date ASC
-            """)
-        cols = [d[0] for d in c.description]
-        rows = [dict(zip(cols, r)) for r in c.fetchall()]
-
-    print(f"총 {len(rows)}개 처리")
-
-    for i, rec in enumerate(rows):
-        prev = rows[i - 1] if i > 0 else None
-        all_records = rows[:i + 1]  # 현재까지 누적 기록
-        print(f"\n[{i+1:02d}/{len(rows)}] {rec['exam_date']}", end=" ... ")
-
-        result = call_llm_health_exam(rec, prev, all_records)
-        if not result:
-            continue
-
-        result["analyzed_at"] = datetime.now().isoformat()
-        with conn.cursor() as c:
-            c.execute(
-                "UPDATE user_health_exam SET raw_llm_json = %s WHERE id = %s",
-                (json.dumps(result, ensure_ascii=False), rec["id"])
-            )
-        conn.commit()
-        print(f"✅ {result.get('summary', '')}")
-
-        if i < len(rows) - 1:
-            time.sleep(1.5)
-
-
-def call_llm_health_exam(current: dict, prev: dict | None, all_records: list) -> dict | None:
-    try:
-        prompt = build_health_exam_prompt(current, prev, all_records)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
-            system="건강검진 데이터 분석 전문가. 시계열 건강 변화를 분석하고 순수 JSON만 응답.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        t = response.content[0].text.strip()
-        if t.startswith("```"):
-            t = t.split("```")[1]
-            if t.startswith("json"):
-                t = t[4:]
-        return json.loads(t.strip())
-    except Exception as e:
-        print(f"  ❌ LLM 실패: {e}")
-        return None
-
-
-def build_health_exam_prompt(current: dict, prev: dict | None, all_records: list) -> str:
-    def fmt(v, unit=""):
-        return f"{v}{unit}" if v is not None else "미측정"
-
-    lines = [
-        f"## 건강검진 결과 분석",
-        f"### 현재 검진일: {current.get('exam_date')} ({current.get('exam_place')})",
-        "",
-        "### 현재 측정값",
-        f"- 키/몸무게: {fmt(current.get('height_cm'), 'cm')} / {fmt(current.get('weight_kg'), 'kg')}",
-        f"- BMI: {fmt(current.get('bmi'))} / 허리둘레: {fmt(current.get('waist_cm'), 'cm')}",
-        f"- 혈압: {fmt(current.get('systolic_bp'))}/{fmt(current.get('diastolic_bp'))} mmHg",
-        f"- 혈색소: {fmt(current.get('hemoglobin'), 'g/dL')}",
-        f"- 공복혈당: {fmt(current.get('fasting_glucose'), 'mg/dL')}",
-        f"- 총콜레스테롤: {fmt(current.get('total_cholesterol'), 'mg/dL')}",
-        f"- HDL: {fmt(current.get('hdl_cholesterol'), 'mg/dL')} / LDL: {fmt(current.get('ldl_cholesterol'), 'mg/dL')}",
-        f"- 중성지방: {fmt(current.get('triglyceride'), 'mg/dL')}",
-        f"- 크레아티닌: {fmt(current.get('creatinine'), 'mg/dL')} / eGFR: {fmt(current.get('egfr'))}",
-        f"- AST: {fmt(current.get('ast'), 'IU/L')} / ALT: {fmt(current.get('alt'), 'IU/L')} / γ-GTP: {fmt(current.get('ggt'), 'IU/L')}",
-        f"- 요단백: {fmt(current.get('urine_protein'))}",
-        f"- 종합판정: {fmt(current.get('overall_result'))}",
-    ]
-
-    if prev:
-        def diff(key, unit=""):
-            a, b = current.get(key), prev.get(key)
-            if a is None or b is None:
-                return "비교불가"
-            try:
-                d = round(float(a) - float(b), 2)
-                return f"{'+' if d >= 0 else ''}{d}{unit}"
-            except:
-                return "비교불가"
-
-        lines += [
-            "",
-            f"### 이전 검진 대비 변화 ({prev.get('exam_date')})",
-            f"- 체중: {diff('weight_kg', 'kg')}",
-            f"- BMI: {diff('bmi')}",
-            f"- 혈압(수축기): {diff('systolic_bp', 'mmHg')}",
-            f"- 공복혈당: {diff('fasting_glucose', 'mg/dL')}",
-            f"- AST: {diff('ast', 'IU/L')} / ALT: {diff('alt', 'IU/L')}",
-            f"- γ-GTP: {diff('ggt', 'IU/L')}",
-        ]
-
-    if len(all_records) > 1:
-        lines += [
-            "",
-            f"### 전체 검진 이력 ({len(all_records)}회)",
-        ]
-        for r in all_records:
-            lines.append(
-                f"- {r['exam_date']}: 체중{fmt(r.get('weight_kg'), 'kg')} "
-                f"혈압{fmt(r.get('systolic_bp'))}/{fmt(r.get('diastolic_bp'))} "
-                f"혈당{fmt(r.get('fasting_glucose'), 'mg/dL')} "
-                f"판정:{fmt(r.get('overall_result'))}"
-            )
-
-    lines += [
-        "",
-        "---",
-        "위 데이터를 분석하여 아래 JSON 형식으로만 응답. 순수 JSON만 출력.",
-        """
-{
-  "summary": "이번 검진 한줄 요약 (50자 이내)",
-  "trend": {
-    "weight": "체중 변화 추세",
-    "blood_pressure": "혈압 변화 추세",
-    "glucose": "혈당 변화 추세",
-    "liver": "간수치 변화 추세",
-    "kidney": "신장 기능 추세",
-    "overall": "전반적 건강 변화 추세"
-  },
-  "risk_factors": ["현재 주의가 필요한 항목들"],
-  "improvements": ["이전 대비 개선된 항목들 (첫 검진이면 null)"],
-  "recommendations": ["권고사항1", "권고사항2", "권고사항3"],
-  "health_score": "0~100 사이 종합 건강점수 (숫자만)"
-}"""
-    ]
-    return "\n".join(lines)
-
-
-# ────────────────────────────────────────────
-# health_exam 재분석
-# ────────────────────────────────────────────
-def run_health_exam(conn, target_id=None):
-    print("\n[건강검진 재분석 시작]")
-    with conn.cursor() as c:
-        if target_id:
-            c.execute("""
-                SELECT id, exam_date, exam_place,
-                       height_cm, weight_kg, bmi, waist_cm,
-                       systolic_bp, diastolic_bp,
-                       hemoglobin, fasting_glucose,
-                       total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglyceride,
-                       creatinine, egfr, ast, alt, ggt,
-                       urine_protein, overall_result, note
-                FROM user_health_exam
-                WHERE user_id = 1 AND id = %s
-                ORDER BY exam_date ASC
-            """, (target_id,))
-        else:
-            c.execute("""
-                SELECT id, exam_date, exam_place,
-                       height_cm, weight_kg, bmi, waist_cm,
-                       systolic_bp, diastolic_bp,
-                       hemoglobin, fasting_glucose,
-                       total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglyceride,
-                       creatinine, egfr, ast, alt, ggt,
-                       urine_protein, overall_result, note
-                FROM user_health_exam
-                WHERE user_id = 1
-                ORDER BY exam_date ASC
-            """)
-        cols = [d[0] for d in c.description]
-        rows = [dict(zip(cols, r)) for r in c.fetchall()]
-
-    print(f"총 {len(rows)}개 처리")
-
-    for i, rec in enumerate(rows):
-        prev = rows[i - 1] if i > 0 else None
-        all_records = rows[:i + 1]  # 현재까지 누적 기록
-        print(f"\n[{i+1:02d}/{len(rows)}] {rec['exam_date']}", end=" ... ")
-
-        result = call_llm_health_exam(rec, prev, all_records)
-        if not result:
-            continue
-
-        result["analyzed_at"] = datetime.now().isoformat()
-        with conn.cursor() as c:
-            c.execute(
-                "UPDATE user_health_exam SET raw_llm_json = %s WHERE id = %s",
-                (json.dumps(result, ensure_ascii=False), rec["id"])
-            )
-        conn.commit()
-        print(f"✅ {result.get('summary', '')}")
-
-        if i < len(rows) - 1:
-            time.sleep(1.5)
-
-
-def call_llm_health_exam(current: dict, prev: dict | None, all_records: list) -> dict | None:
-    try:
-        prompt = build_health_exam_prompt(current, prev, all_records)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
-            system="건강검진 데이터 분석 전문가. 시계열 건강 변화를 분석하고 순수 JSON만 응답.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        t = response.content[0].text.strip()
-        if t.startswith("```"):
-            t = t.split("```")[1]
-            if t.startswith("json"):
-                t = t[4:]
-        return json.loads(t.strip())
-    except Exception as e:
-        print(f"  ❌ LLM 실패: {e}")
-        return None
-
-
-def build_health_exam_prompt(current: dict, prev: dict | None, all_records: list) -> str:
-    def fmt(v, unit=""):
-        return f"{v}{unit}" if v is not None else "미측정"
-
-    lines = [
-        f"## 건강검진 결과 분석",
-        f"### 현재 검진일: {current.get('exam_date')} ({current.get('exam_place')})",
-        "",
-        "### 현재 측정값",
-        f"- 키/몸무게: {fmt(current.get('height_cm'), 'cm')} / {fmt(current.get('weight_kg'), 'kg')}",
-        f"- BMI: {fmt(current.get('bmi'))} / 허리둘레: {fmt(current.get('waist_cm'), 'cm')}",
-        f"- 혈압: {fmt(current.get('systolic_bp'))}/{fmt(current.get('diastolic_bp'))} mmHg",
-        f"- 혈색소: {fmt(current.get('hemoglobin'), 'g/dL')}",
-        f"- 공복혈당: {fmt(current.get('fasting_glucose'), 'mg/dL')}",
-        f"- 총콜레스테롤: {fmt(current.get('total_cholesterol'), 'mg/dL')}",
-        f"- HDL: {fmt(current.get('hdl_cholesterol'), 'mg/dL')} / LDL: {fmt(current.get('ldl_cholesterol'), 'mg/dL')}",
-        f"- 중성지방: {fmt(current.get('triglyceride'), 'mg/dL')}",
-        f"- 크레아티닌: {fmt(current.get('creatinine'), 'mg/dL')} / eGFR: {fmt(current.get('egfr'))}",
-        f"- AST: {fmt(current.get('ast'), 'IU/L')} / ALT: {fmt(current.get('alt'), 'IU/L')} / γ-GTP: {fmt(current.get('ggt'), 'IU/L')}",
-        f"- 요단백: {fmt(current.get('urine_protein'))}",
-        f"- 종합판정: {fmt(current.get('overall_result'))}",
-    ]
-
-    if prev:
-        def diff(key, unit=""):
-            a, b = current.get(key), prev.get(key)
-            if a is None or b is None:
-                return "비교불가"
-            try:
-                d = round(float(a) - float(b), 2)
-                return f"{'+' if d >= 0 else ''}{d}{unit}"
-            except:
-                return "비교불가"
-
-        lines += [
-            "",
-            f"### 이전 검진 대비 변화 ({prev.get('exam_date')})",
-            f"- 체중: {diff('weight_kg', 'kg')}",
-            f"- BMI: {diff('bmi')}",
-            f"- 혈압(수축기): {diff('systolic_bp', 'mmHg')}",
-            f"- 공복혈당: {diff('fasting_glucose', 'mg/dL')}",
-            f"- AST: {diff('ast', 'IU/L')} / ALT: {diff('alt', 'IU/L')}",
-            f"- γ-GTP: {diff('ggt', 'IU/L')}",
-        ]
-
-    if len(all_records) > 1:
-        lines += [
-            "",
-            f"### 전체 검진 이력 ({len(all_records)}회)",
-        ]
-        for r in all_records:
-            lines.append(
-                f"- {r['exam_date']}: 체중{fmt(r.get('weight_kg'), 'kg')} "
-                f"혈압{fmt(r.get('systolic_bp'))}/{fmt(r.get('diastolic_bp'))} "
-                f"혈당{fmt(r.get('fasting_glucose'), 'mg/dL')} "
-                f"판정:{fmt(r.get('overall_result'))}"
-            )
-
-    lines += [
-        "",
-        "---",
-        "위 데이터를 분석하여 아래 JSON 형식으로만 응답. 순수 JSON만 출력.",
-        """
-{
-  "summary": "이번 검진 한줄 요약 (50자 이내)",
-  "trend": {
-    "weight": "체중 변화 추세",
-    "blood_pressure": "혈압 변화 추세",
-    "glucose": "혈당 변화 추세",
-    "liver": "간수치 변화 추세",
-    "kidney": "신장 기능 추세",
-    "overall": "전반적 건강 변화 추세"
-  },
-  "risk_factors": ["현재 주의가 필요한 항목들"],
-  "improvements": ["이전 대비 개선된 항목들 (첫 검진이면 null)"],
-  "recommendations": ["권고사항1", "권고사항2", "권고사항3"],
-  "health_score": "0~100 사이 종합 건강점수 (숫자만)"
-}"""
-    ]
-    return "\n".join(lines)

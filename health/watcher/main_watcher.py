@@ -18,6 +18,7 @@ from watchdog.events import FileSystemEventHandler
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root.parent))  # data_pipeline 패키지(…/claude_config 등) 임포트용
 
 from services.inbody_pipeline_service import process_image_file as process_inbody
 from services.fitdays_pipeline_service import process_image_file as process_fitdays

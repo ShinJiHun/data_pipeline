@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import shutil
 import base64
@@ -7,13 +8,10 @@ import io
 from PIL import Image
 from pathlib import Path
 from sqlalchemy import create_engine, text
-import anthropic
-from dotenv import load_dotenv
 
-load_dotenv("/mnt/200gb/apps/.env")
+sys.path.insert(0, "/mnt/200gb/project")
+from data_pipeline.claude_config import client, CLAUDE_MODEL, extract_text
 
-# ========== 설정 ==========
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 DB_URL = (
     f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.getenv('DB_PASSWORD', 'ride1234!')}"
     f"@{os.getenv('DB_HOST', '172.17.0.1')}:3306/riding_db"
@@ -27,7 +25,6 @@ os.makedirs(FITDAYS_RAW_DIR,       exist_ok=True)
 os.makedirs(FITDAYS_PROCESSED_DIR, exist_ok=True)
 os.makedirs(FITDAYS_FAILED_DIR,    exist_ok=True)
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
 
@@ -80,7 +77,7 @@ def call_claude(image_path: str) -> dict:
 JSON만 반환하고 다른 텍스트는 포함하지 마세요."""
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_MODEL,
         max_tokens=1024,
         messages=[{
             "role": "user",
@@ -92,7 +89,7 @@ JSON만 반환하고 다른 텍스트는 포함하지 마세요."""
     )
 
     try:
-        raw_text = response.content[0].text.strip()
+        raw_text = extract_text(response).strip()
         if raw_text.startswith("```"):
             raw_text = raw_text.split("\n", 1)[1]
             raw_text = raw_text.rsplit("```", 1)[0]
@@ -102,7 +99,7 @@ JSON만 반환하고 다른 텍스트는 포함하지 마세요."""
         return result
     except Exception as e:
         print(f"[Claude] ⚠️ 응답 파싱 실패: {e}")
-        print(f"[Claude] 원본 응답: {response.content[0].text}")
+        print(f"[Claude] 원본 응답: {extract_text(response)}")
         raise e
 
 

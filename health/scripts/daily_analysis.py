@@ -3,15 +3,15 @@ LifeMetrics - 하루 운동 + 식단 통합 분석 (Claude API)
 사용법: python daily_analysis.py --date 2026-03-04
 """
 
-import anthropic
+import sys
 import mysql.connector
 import argparse
 import json
 import os
 from datetime import date
-from dotenv import load_dotenv
 
-load_dotenv("/mnt/200gb/apps/.env")
+sys.path.insert(0, "/mnt/200gb/project")
+from data_pipeline.claude_config import client, CLAUDE_MODEL, extract_text
 
 # ───────────────────────────────────────────
 # 환경변수에서 설정 로드
@@ -31,8 +31,6 @@ DB_CONFIG = {
     "charset":  "utf8mb4",
     "collation": "utf8mb4_general_ci",
 }
-
-ANTHROPIC_API_KEY = get_env("ANTHROPIC_API_KEY")
 
 
 def rows_to_dict(cursor, rows):
@@ -142,8 +140,6 @@ def calc_nutrition(food_logs: list) -> dict:
 # 5. Claude API 분석 요청
 # ───────────────────────────────────────────
 def analyze_with_claude(target_date: str, exercise_volume: dict, nutrition: dict) -> str:
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
     prompt = f"""
 다음은 {target_date} 하루 운동 및 식단 데이터입니다. 한국어로 분석해주세요.
 
@@ -172,12 +168,12 @@ def analyze_with_claude(target_date: str, exercise_volume: dict, nutrition: dict
 """
 
     message = client.messages.create(
-        model="claude-sonnet-5",
+        model=CLAUDE_MODEL,
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return message.content[0].text
+    return extract_text(message)
 
 
 # ───────────────────────────────────────────

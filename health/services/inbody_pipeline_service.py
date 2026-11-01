@@ -1,13 +1,13 @@
 import os
+import sys
 import json
 import shutil
 import base64
 from pathlib import Path
 from sqlalchemy import create_engine, text
-import anthropic
 
-# ========== 설정 ==========
-import os; from dotenv import load_dotenv; load_dotenv("/mnt/200gb/apps/.env"); ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+sys.path.insert(0, "/mnt/200gb/project")
+from data_pipeline.claude_config import client, CLAUDE_MODEL, extract_text
 
 DB_URL = (
     f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.getenv('DB_PASSWORD', 'ride1234!')}"
@@ -26,7 +26,6 @@ os.makedirs(INBODY_PROCESSED_DIR, exist_ok=True)
 os.makedirs(INBODY_FAILED_DIR, exist_ok=True)
 os.makedirs(INBODY_JSON_DIR, exist_ok=True)
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
 
@@ -66,7 +65,7 @@ def call_claude(image_path: str) -> dict:
 JSON만 반환하고 다른 텍스트는 포함하지 마세요."""
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_MODEL,
         max_tokens=1024,
         messages=[{
             "role": "user",
@@ -78,7 +77,7 @@ JSON만 반환하고 다른 텍스트는 포함하지 마세요."""
     )
 
     try:
-        raw_text = response.content[0].text.strip()
+        raw_text = extract_text(response).strip()
         if raw_text.startswith("```"):
             raw_text = raw_text.split("\n", 1)[1]
             raw_text = raw_text.rsplit("```", 1)[0]
@@ -217,6 +216,32 @@ def build_analysis_prompt(current: dict, prev: dict | None, profile: dict) -> st
     return "\n".join(lines)
 
 
+# 분석 응답 스키마 (structured outputs로 강제 → JSON 파싱 실패 방지)
+_STR = {"type": "string"}
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "current_evaluation", "trend", "goal_status", "recommendations"],
+    "properties": {
+        "summary": _STR,
+        "current_evaluation": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["muscle", "fat", "overall"],
+            "properties": {"muscle": _STR, "fat": _STR, "overall": _STR},
+        },
+        "trend": {"type": ["string", "null"]},
+        "goal_status": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["body", "cycling"],
+            "properties": {"body": _STR, "cycling": _STR},
+        },
+        "recommendations": {"type": "array", "items": _STR},
+    },
+}
+
+
 def call_llm_analysis(current: dict) -> dict | None:
     """체성분 + 사이클 목표 기반 LLM 분석"""
     print(f"[분석] LLM 분석 시작...")
@@ -225,23 +250,22 @@ def call_llm_analysis(current: dict) -> dict | None:
         prev    = get_prev_record(str(current.get("record_date", "")))
         prompt  = build_analysis_prompt(current, prev, profile)
 
+        # max_tokens는 thinking 토큰까지 포함 → 1000이면 응답이 잘리거나 text 블록이 비어 버림
+        # output_config는 SDK 0.75에 인자가 없어서 extra_body로 전달
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
+            model=CLAUDE_MODEL,
+            max_tokens=4000,
             system=(
                 "당신은 체성분 및 사이클 퍼포먼스 전문 분석가입니다. "
-                "인바디 데이터와 사이클 목표를 연결하여 실용적인 분석을 제공합니다. "
-                "반드시 순수 JSON만 응답하세요."
+                "인바디 데이터와 사이클 목표를 연결하여 실용적인 분석을 제공합니다."
             ),
             messages=[{"role": "user", "content": prompt}],
+            extra_body={"output_config": {"format": {"type": "json_schema", "schema": ANALYSIS_SCHEMA}}},
         )
 
-        text_raw = response.content[0].text.strip()
-        if text_raw.startswith("```"):
-            text_raw = text_raw.split("```")[1]
-            if text_raw.startswith("json"):
-                text_raw = text_raw[4:]
-        result = json.loads(text_raw.strip())
+        if response.stop_reason == "max_tokens":
+            raise ValueError("응답이 max_tokens에서 잘림")
+        result = json.loads(extract_text(response))
         print(f"[분석] 완료: {result.get('summary', '')}")
         return result
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 import pymysql
 
-import anthropic
+import sys
 import json
 import os
 import time
-from dotenv import load_dotenv
 
-load_dotenv("/mnt/200gb/apps/.env")
+sys.path.insert(0, "/mnt/200gb/project")
+from data_pipeline.claude_config import client, CLAUDE_MODEL_FAST, extract_text
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "172.17.0.1"),
@@ -18,7 +18,6 @@ DB_CONFIG = {
     "charset":  "utf8mb4",
 }
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BATCH_SIZE = 20
 
 SYSTEM_PROMPT = """당신은 피트니스 전문가입니다.
@@ -67,25 +66,24 @@ def update_exercises(conn, results):
     conn.commit()
 
 
-def process_batch(client, batch):
+def process_batch(batch):
     user_content = json.dumps(
         [{"id": r["id"], "name_ko": r["name_ko"]} for r in batch],
         ensure_ascii=False
     )
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=CLAUDE_MODEL_FAST,
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}]
     )
-    text = response.content[0].text.strip()
+    text = extract_text(response).strip()
     return json.loads(text)
 
 
 def main():
     print("DB 연결 중...")
     conn = pymysql.connect(**DB_CONFIG, cursorclass=pymysql.cursors.DictCursor)
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     exercises = fetch_exercises(conn)
     total = len(exercises)
@@ -102,7 +100,7 @@ def main():
         print(f"\n[{batch_num}/{total_batches}] {[r['name_ko'] for r in batch]}")
 
         try:
-            results = process_batch(client, batch)
+            results = process_batch(batch)
             update_exercises(conn, results)
             success += len(results)
             print(f"  ✓ {len(results)}개 완료")
