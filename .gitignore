@@ -46,3 +46,11 @@ credentials.json
 client_secret_*.json
 health/scripts/google_fit_nutrition_batch.py
 health/scripts/google_fit_nutrition_batch.py.bak
+
+########################
+# Local backups / secrets (added 2026-11-01)
+########################
+*.bak_*
+.env.bak*
+claude_config.py
+health/scripts/credentials/
