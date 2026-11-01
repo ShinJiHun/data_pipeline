@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import pymysql
 
 import sys
@@ -13,7 +15,7 @@ DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "172.17.0.1"),
     "port":     3306,
     "user":     os.getenv("DB_USERNAME", "tho881"),
-    "password": os.getenv("DB_PASSWORD", "ride1234!"),
+    "password": os.environ["DB_PASSWORD"],
     "database": "riding_db",
     "charset":  "utf8mb4",
 }

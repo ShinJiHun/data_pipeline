@@ -1,3 +1,6 @@
+import os
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import pymysql
 import pandas as pd
 from geopy.distance import distance
@@ -11,7 +14,7 @@ from shapely.geometry import LineString, Point
 conn = pymysql.connect(
     host='127.0.0.1',
     user='tho881',
-    password='ride1234!',
+    password=os.environ["DB_PASSWORD"],
     database='riding_db',
     charset='utf8mb4'
 )

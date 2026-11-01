@@ -2,6 +2,8 @@
 건강검진 결과지 PDF/이미지 → Claude OCR → LLM 분석 → DB 저장 (health_checkup 테이블)
 """
 
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import os
 import re
 import sys
@@ -18,7 +20,7 @@ DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "172.17.0.1"),
     "port":     3306,
     "user":     os.getenv("DB_USERNAME", "tho881"),
-    "password": os.getenv("DB_PASSWORD", "ride1234!"),
+    "password": os.environ["DB_PASSWORD"],
     "database": "riding_db",
     "charset":  "utf8mb4",
 }

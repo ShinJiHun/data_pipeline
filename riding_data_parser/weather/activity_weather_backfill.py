@@ -9,6 +9,10 @@ activity_weather_backfill.py
     python3 activity_weather_backfill.py --id 12345    # 특정 라이딩만
 """
 
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import requests
 import time
 import argparse
@@ -16,7 +20,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 
 # ── DB 설정 ──
-DB_URL = "mysql+pymysql://tho881:ride1234!@localhost:3306/riding_db?charset=utf8mb4"
+DB_URL = f"mysql+pymysql://{os.environ['DB_USER']}:{quote_plus(os.environ['DB_PASSWORD'])}@localhost:3306/riding_db?charset=utf8mb4"
 engine = create_engine(DB_URL)
 
 # ── Open-Meteo 설정 ──

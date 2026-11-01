@@ -1,11 +1,10 @@
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-DB_URL = os.getenv(
-    "DB_URL",
-    "mysql+pymysql://tho881:ride1234!@127.0.0.1:3306/riding_db",
-)
+DB_URL = os.environ["DB_URL"]
 
 engine = create_engine(
     DB_URL,

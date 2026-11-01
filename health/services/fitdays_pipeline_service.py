@@ -1,3 +1,5 @@
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import os
 import sys
 import json
@@ -13,7 +15,7 @@ sys.path.insert(0, "/mnt/200gb/project")
 from data_pipeline.claude_config import client, CLAUDE_MODEL, extract_text
 
 DB_URL = (
-    f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.getenv('DB_PASSWORD', 'ride1234!')}"
+    f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.environ['DB_PASSWORD']}"
     f"@{os.getenv('DB_HOST', '172.17.0.1')}:3306/riding_db"
 )
 

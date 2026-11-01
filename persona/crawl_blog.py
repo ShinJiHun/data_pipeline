@@ -12,7 +12,7 @@ DB 접속: common.database가 DB_URL 환경변수를 읽는다.
     pip install requests beautifulsoup4 sentence-transformers sqlalchemy pymysql lxml
 
 환경변수 (반드시 journal_db를 가리키도록 설정):
-    export DB_URL='mysql+pymysql://tho881:ride1234!@34.172.162.148:3306/journal_db'
+    export DB_URL='mysql+pymysql://tho881:<DB_PASSWORD>@34.172.162.148:3306/journal_db'
 
 사용법:
     python3 crawl_blog.py

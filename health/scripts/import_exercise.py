@@ -3,6 +3,8 @@
 대상 테이블: exercise_category, exercise_item, exercise_session, exercise_log
 """
 
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 import csv
 import os
 import sys
@@ -14,7 +16,7 @@ DB_CONFIG = {
     "host":     "172.17.0.1",
     "port":     3306,
     "user":     "tho881",
-    "password": "ride1234!",
+    "password": os.environ["DB_PASSWORD"],
     "database": "riding_db",
     "charset":  "utf8mb4",
     "collation": "utf8mb4_unicode_ci",

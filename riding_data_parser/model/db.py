@@ -1,5 +1,6 @@
 # riding_data_parser/model/db.py
 
+import re
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -17,7 +18,7 @@ DB_URL = os.getenv("DB_URL")
 if not DB_URL:
     raise ValueError("❌ DB_URL not found. Check .env path.")
 
-print(f"🔍 DB_URL 확인: {DB_URL}", flush=True)
+print(f"🔍 DB_URL 확인: {re.sub(r':[^:@/]+@', ':***@', DB_URL)}", flush=True)
 
 engine = create_engine(DB_URL, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)

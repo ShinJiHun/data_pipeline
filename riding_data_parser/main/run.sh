@@ -3,7 +3,6 @@
 PROJECT_ROOT="/mnt/200gb/project/data_pipeline"
 VENV_PYTHON="$PROJECT_ROOT/venv/bin/python"
 
-export DB_URL="mysql+pymysql://tho881:ride1234!@127.0.0.1:3306/riding_db"
 
 # .env 로드
 set -a

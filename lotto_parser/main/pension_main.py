@@ -1,3 +1,7 @@
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from sqlalchemy import create_engine, text
@@ -18,7 +22,7 @@ def detect_db_env():
 
 
 def build_db_url(host, port):
-    return f"mysql+pymysql://tho881:ride1234!@{host}:{port}/lotto_db"
+    return f"mysql+pymysql://{os.environ['DB_USER']}:{quote_plus(os.environ['DB_PASSWORD'])}@{host}:{port}/lotto_db"
 
 
 # ======================================================

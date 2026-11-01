@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 load_dotenv("/mnt/200gb/apps/.env")
 
 DATABASE_URL = (
-    f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.getenv('DB_PASSWORD', 'ride1234!')}"
+    f"mysql+pymysql://{os.getenv('DB_USERNAME', 'tho881')}:{os.environ['DB_PASSWORD']}"
     f"@{os.getenv('DB_HOST', '172.17.0.1')}:3306/riding_db"
 )
 

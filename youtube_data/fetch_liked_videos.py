@@ -6,7 +6,7 @@ YouTube '좋아요 표시한 동영상' 메타데이터를 전부 가져와서 D
     (get_youtube_token.py를 로컬에서 먼저 실행해서 얻은 값)
 
 사용법:
-    export PYTHON_DB_URL='mysql+pymysql://tho881:ride1234!@127.0.0.1:3306/riding_db'
+    export PYTHON_DB_URL='mysql+pymysql://tho881:<DB_PASSWORD>@127.0.0.1:3306/riding_db'
     python3 fetch_liked_videos.py
 """
 

@@ -1,3 +1,4 @@
+import re
 import os
 import shutil
 from sqlalchemy import create_engine
@@ -57,7 +58,7 @@ def main():
     if not db_url:
         raise RuntimeError("❌ DB_URL 환경변수가 설정되지 않았습니다.")
 
-    print(f"🔍 DB_URL 확인: {db_url}")
+    print(f"🔍 DB_URL 확인: {re.sub(r':[^:@/]+@', ':***@', db_url)}")
 
     engine = create_engine(
         db_url,
