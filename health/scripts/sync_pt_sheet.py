@@ -5,6 +5,8 @@ sync_pt_sheet.py
 구글 시트("헬스 운동기록" > "PT운동 일정" 탭)에 적어온 PT 운동일지를
 LifeMetrics의 exercise_session / exercise_log / exercise_set 테이블에 동기화하는 배치 스크립트.
 
+- service_account.json(서비스 계정 키)이 있으면 그걸로 인증한다(권장, cron 용).
+  없을 때만 아래 OAuth 방식으로 동작한다.
 - get_brevet.py / download_permanent_gpx.py 와 동일한 Google Drive OAuth
   (credentials.json / token.json)을 그대로 재사용함. 이 스크립트를 같은 폴더에 두거나,
   --credentials / --token 으로 경로를 지정하면 됨. (Drive의 drive.readonly 스코프만으로
@@ -20,7 +22,9 @@ LifeMetrics의 exercise_session / exercise_log / exercise_set 테이블에 동�
    방어적으로 처리하고, 애매한 값은 세트에 넣지 않고 로그 메모에 원문을 남긴다.
    (자세한 규칙은 parse_numeric_field 참고)
 4. 운동 이름(name_ko/name_en)이 기존 exercise_item과 매칭되면 그대로 쓰고,
-   없으면 새 exercise_item을 만든다. 카테고리는 운동 이름의 키워드로 추정하고,
+   없으면 새 exercise_item을 만든다. 이미 들어간(스킵되는) 세션의 행도 운동 종목은 매번
+   대조해서 없으면 추가하고, 매칭된 기존 종목에 비어 있는 name_ko/name_en 은 시트 값으로
+   채운다(기존 값은 안 바꿈). 카테고리는 운동 이름의 키워드로 추정하고,
    추정이 안 되면 시트에 적힌 body_part(예: "하체 / 삼두"의 첫 토�은)로 대체한다.
    운동 자체 세션 배분은 새 부위/운동이 하나라도 생성되면 리포트에 표시되므로,
    커밋 전에 확인 가능하다.
@@ -66,6 +70,10 @@ USER_ID = 1  # ExerciseInputPage.tsx 의 기본값과 동일
 
 CREDENTIALS = os.path.join(os.path.dirname(__file__), "credentials.json")
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.json")
+# 서비스 계정 키(gitignore). 있으면 OAuth 대신 이걸 쓴다 — 토큰 만료/브라우저 재인증 없음.
+# 시트를 키의 client_email 에 뷰어로 공유해야 읽힌다.
+SERVICE_ACCOUNT_FILE = os.environ.get(
+    "PT_SHEET_SERVICE_ACCOUNT", os.path.join(os.path.dirname(__file__), "service_account.json"))
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 MAX_SANE_WEIGHT = 500.0  # 이 이상은 오타로 간주 (예: "2008/7/6")
@@ -77,6 +85,10 @@ load_dotenv(find_dotenv())
 # 1) Google Drive에서 시트 xlsx 받아오기 (get_brevet.py / download_permanent_gpx.py 와 동일 패턴)
 # ════════════════════════════════════════════════════════════════
 def get_drive_service():
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        return build("drive", "v3", credentials=creds)
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -395,14 +407,20 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
                       conn.execute(text("SELECT id, name FROM exercise_category")).mappings()}
 
         items = list(conn.execute(text(
-            "SELECT id, category_id, name_ko, name_en FROM exercise_item")).mappings())
+            "SELECT id, category_id, name, name_ko, name_en FROM exercise_item")).mappings())
         items_by_ko: dict[str, int] = {}
         items_by_en: dict[str, int] = {}
+        items_by_name: dict[str, int] = {}
+        item_names: dict[int, dict] = {}  # id -> {"ko":..., "en":...} (빈 이름 보완용)
         for it in items:
             if it["name_ko"]:
                 items_by_ko.setdefault(norm_name(it["name_ko"]), it["id"])
             if it["name_en"]:
                 items_by_en.setdefault(norm_name(it["name_en"]), it["id"])
+            if it["name"]:
+                items_by_name.setdefault(norm_name(it["name"]), it["id"])
+            item_names[it["id"]] = {"ko": it["name_ko"], "en": it["name_en"]}
+        filled_names: list[tuple] = []  # (item_id, column, value)
 
         new_categories: dict[str, int] = {}
         new_items: list[tuple] = []  # (name_ko, name_en, category_name)
@@ -428,13 +446,32 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
             new_categories[name] = cid
             return cid
 
+        def fill_missing_names(iid: int, name_ko: str, name_en: str):
+            """기존 종목에 비어 있는 한/영 이름을 시트 값으로 채운다 (있는 값은 안 바꿈)."""
+            cur = item_names.get(iid)
+            if cur is None:
+                return
+            for col, key, val, index in (("name_ko", "ko", name_ko, items_by_ko),
+                                         ("name_en", "en", name_en, items_by_en)):
+                if val and not cur[key]:
+                    if commit:
+                        conn.execute(
+                            text(f"UPDATE exercise_item SET {col}=:v WHERE id=:id AND {col} IS NULL"),
+                            {"v": val, "id": iid},
+                        )
+                    cur[key] = val
+                    index.setdefault(norm_name(val), iid)
+                    filled_names.append((iid, col, val))
+
         def get_or_create_item(name_ko: str, name_en: str, category_name: str) -> int:
             key_ko = norm_name(name_ko)
             key_en = norm_name(name_en)
-            if key_ko and key_ko in items_by_ko:
-                return items_by_ko[key_ko]
-            if key_en and key_en in items_by_en:
-                return items_by_en[key_en]
+            for key, index in ((key_ko, items_by_ko), (key_en, items_by_en),
+                               (key_ko, items_by_name), (key_en, items_by_name)):
+                if key and key in index:
+                    iid = index[key]
+                    fill_missing_names(iid, name_ko, name_en)
+                    return iid
 
             cid = get_or_create_category(category_name)
             display_name = name_ko or name_en
@@ -453,6 +490,8 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
                 items_by_ko[key_ko] = iid
             if key_en:
                 items_by_en[key_en] = iid
+            items_by_name.setdefault(norm_name(display_name), iid)
+            item_names[iid] = {"ko": name_ko or None, "en": name_en or None}
             new_items.append((name_ko, name_en, category_name))
             return iid
 
@@ -491,6 +530,12 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
                 ).first()
                 if already:
                     skipped_sessions.append(s.session_no)
+                    # 이미 넣은 세션이어도 운동 종목은 DB 와 대조해서 없으면 추가한다
+                    # (나중에 시트에 행을 더 적거나 이름을 고친 경우 대비). 기록은 안 건드림.
+                    tokens = normalize_body_part_tokens(s.body_part)
+                    for e in s.exercises:
+                        cat_name, _reason = infer_category(e.name_ko, e.name_en, tokens)
+                        get_or_create_item(e.name_ko, e.name_en, cat_name)
                     continue
 
             tokens = normalize_body_part_tokens(s.body_part)
@@ -570,6 +615,9 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
         print(f"  + [{cat}] {ko} / {en}")
     if len(new_items) > 50:
         print(f"  ... 외 {len(new_items) - 50}개")
+    print(f"기존 운동에 빈 한/영 이름 채움: {len(filled_names)}건")
+    for iid, col, val in filled_names[:50]:
+        print(f"  ~ exercise_item#{iid}.{col} = {val}")
 
     print(f"\n--- 무게/세트 샘플 (세션당 첫 운동, {len(preview_rows)}개) ---")
     for p in preview_rows[:20]:

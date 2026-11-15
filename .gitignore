@@ -54,3 +54,6 @@ health/scripts/google_fit_nutrition_batch.py.bak
 .env.bak*
 claude_config.py
 health/scripts/credentials/
+
+# Google 서비스 계정 키
+service_account*.json
