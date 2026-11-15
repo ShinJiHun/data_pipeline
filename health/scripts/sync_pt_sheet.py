@@ -66,6 +66,16 @@ from googleapiclient.discovery import build
 # ── 설정 ──────────────────────────────────────────────────────────
 SHEET_ID = "1NfhQvpDkp0LvcMbqPvpmBKVH5wXGI-lmdVETkxlHnUk"  # "헬스 운동기록"
 SHEET_TAB_NAME = "PT운동 일정"
+CARDIO_TAB_NAME = "유산소"
+CARDIO_CATEGORY = "유산소"
+# 유산소 탭은 한글 종목명만 적으므로, 기존 종목(영문명)과 묶기 위한 영문명 사전.
+CARDIO_EN = {
+    "러닝머신": "Treadmill", "런닝머신": "Treadmill", "트레드밀": "Treadmill", "트레드 밀": "Treadmill",
+    "천국의 계단": "Stair Climber", "천국의계단": "Stair Climber", "스텝밀": "Stair Climber",
+    "실내 사이클": "Indoor Cycle", "실내사이클": "Indoor Cycle", "사이클": "Indoor Cycle",
+    "로잉머신": "Rowing Machine", "로잉 머신": "Rowing Machine",
+    "일립티컬": "Elliptical", "줄넘기": "Jump Rope",
+}
 USER_ID = 1  # ExerciseInputPage.tsx 의 기본값과 동일
 
 CREDENTIALS = os.path.join(os.path.dirname(__file__), "credentials.json")
@@ -158,6 +168,68 @@ def load_rows_from_xlsx(xlsx_bytes: bytes, tab_name: str) -> list[list]:
             video,
         ])
     return rows
+
+
+@dataclass
+class CardioEntry:
+    date: str
+    name: str
+    occurrence: int          # 같은 날 같은 종목의 몇 번째 줄인지 (1부터)
+    duration_min: float | None
+    distance_km: float | None
+    speed_incline: str
+    kcal: int | None
+    avg_hr: int | None
+    memo: str
+
+    @property
+    def marker(self) -> str:
+        return f"[cardio#{self.date}#{self.name}#{self.occurrence}]"
+
+
+def _num(v):
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = re.search(r"-?\d+(\.\d+)?", str(v).replace(",", ""))
+    return float(m.group()) if m else None
+
+
+def load_cardio_rows(xlsx_bytes: bytes, tab_name: str = CARDIO_TAB_NAME) -> list[CardioEntry] | None:
+    """유산소 탭: 6행 헤더(날짜|운동 종목|운동 시간 (분)|거리 (km)|속도 / 경사도|소모 칼로리|심박수|메모), B~I열.
+    탭이 없으면 None (없는 것과 비어 있는 것을 구분 — 없으면 DB 쪽 삭제도 안 함)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    if tab_name not in wb.sheetnames:
+        return None
+    ws = wb[tab_name]
+    out: list[CardioEntry] = []
+    seen: dict[tuple, int] = {}
+    for r in ws.iter_rows(min_row=7, max_row=ws.max_row, min_col=2, max_col=9, values_only=True):
+        date, name, dur, dist, speed, kcal, hr, memo = r
+        if date is None or not name or not str(name).strip():
+            continue
+        if isinstance(date, (datetime.datetime, datetime.date)):
+            d = date.strftime("%Y-%m-%d")
+        else:
+            m = re.match(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", str(date).strip())
+            if not m:
+                continue
+            d = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        name = str(name).strip()
+        key = (d, name)
+        seen[key] = seen.get(key, 0) + 1
+        k, h = _num(kcal), _num(hr)
+        out.append(CardioEntry(
+            date=d, name=name, occurrence=seen[key],
+            duration_min=_num(dur), distance_km=_num(dist),
+            speed_incline=str(speed).strip() if speed is not None else "",
+            kcal=round(k) if k is not None else None,
+            avg_hr=round(h) if h is not None else None,
+            memo=str(memo).strip() if memo is not None else "",
+        ))
+    return out
 
 
 # ════════════════════════════════════════════════════════════════
@@ -495,14 +567,14 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
             new_items.append((name_ko, name_en, category_name))
             return iid
 
-        def get_or_create_session(session_date: str) -> int:
+        def get_or_create_session(session_date: str, mark_pt: bool = True) -> int:
             row = conn.execute(
                 text("SELECT id FROM exercise_session WHERE user_id=:uid AND session_date=:d"),
                 {"uid": USER_ID, "d": session_date},
             ).mappings().first()
             if row:
                 sid = row["id"]
-                if commit:
+                if commit and mark_pt:
                     conn.execute(
                         text("UPDATE exercise_session SET is_pt=1 WHERE id=:id"),
                         {"id": sid},
@@ -512,9 +584,9 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
                 return conn.execute(
                     text(
                         "INSERT INTO exercise_session (user_id, session_date, is_pt) "
-                        "VALUES (:uid, :d, 1)"
+                        "VALUES (:uid, :d, :pt)"
                     ),
-                    {"uid": USER_ID, "d": session_date},
+                    {"uid": USER_ID, "d": session_date, "pt": 1 if mark_pt else 0},
                 ).lastrowid
             return -1  # dry-run
 
@@ -596,6 +668,62 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
 
             imported_sessions.append(s.session_no)
 
+        # ── 유산소 탭: 줄마다 [cardio#날짜#종목#n] 마커로 upsert, 시트에서 사라진 줄은 삭제 ──
+        cardio_rows = load_cardio_rows(xlsx_bytes)
+        cardio_new, cardio_updated, cardio_deleted = [], [], []
+        # exercise_cardio.sql(거리·칼로리·심박 컬럼)이 아직 안 들어간 DB면 유산소는 건너뛴다
+        # — 안 그러면 INSERT 오류로 트랜잭션 전체(PT 세션 포함)가 롤백된다.
+        cardio_ready = conn.execute(text(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() "
+            "AND table_name = 'exercise_log' AND column_name IN ('distance_km', 'kcal', 'avg_hr')")).scalar() == 3
+        if cardio_rows is not None and not cardio_ready:
+            print("⚠ exercise_log 에 distance_km/kcal/avg_hr 컬럼이 없어 유산소 탭은 건너뜀 (exercise_cardio.sql 적용 필요)")
+            cardio_rows = None
+        if cardio_rows is not None:
+            existing = {
+                r["marker"]: r for r in conn.execute(text(
+                    "SELECT l.id, l.session_id, SUBSTRING_INDEX(l.memo, ']', 1) AS marker, "
+                    "l.exercise_item_id, l.duration_sec, l.distance_km, l.kcal, l.avg_hr, l.memo "
+                    "FROM exercise_log l WHERE l.memo LIKE '[cardio#%'")).mappings()
+            }
+            existing = {k + "]": v for k, v in existing.items()}
+            for c in cardio_rows:
+                item_id = get_or_create_item(c.name, CARDIO_EN.get(c.name, ""), CARDIO_CATEGORY)
+                memo = " ".join(x for x in (c.marker, c.speed_incline, c.memo) if x)
+                vals = {
+                    "iid": item_id,
+                    "dur": round(c.duration_min * 60) if c.duration_min is not None else None,
+                    "dist": round(c.distance_km, 2) if c.distance_km is not None else None,
+                    "kcal": c.kcal, "hr": c.avg_hr, "memo": memo,
+                }
+                old = existing.pop(c.marker, None)
+                if old is None:
+                    sid = get_or_create_session(c.date, mark_pt=False)
+                    if commit:
+                        conn.execute(text(
+                            "INSERT INTO exercise_log (session_id, exercise_item_id, sets, duration_sec, "
+                            "distance_km, kcal, avg_hr, memo) "
+                            "VALUES (:sid, :iid, 1, :dur, :dist, :kcal, :hr, :memo)"), {"sid": sid, **vals})
+                    cardio_new.append(c)
+                    continue
+                cur = (old["exercise_item_id"], old["duration_sec"],
+                       float(old["distance_km"]) if old["distance_km"] is not None else None,
+                       old["kcal"], old["avg_hr"], old["memo"])
+                if cur != (vals["iid"], vals["dur"], vals["dist"], vals["kcal"], vals["hr"], vals["memo"]):
+                    if commit:
+                        conn.execute(text(
+                            "UPDATE exercise_log SET exercise_item_id=:iid, duration_sec=:dur, distance_km=:dist, "
+                            "kcal=:kcal, avg_hr=:hr, memo=:memo WHERE id=:id"), {"id": old["id"], **vals})
+                    cardio_updated.append(c)
+            # 시트에서 지워진 줄 → DB에서도 삭제. 그 때문에 빈 비-PT 세션이 되면 세션도 삭제.
+            for marker, old in existing.items():
+                cardio_deleted.append(marker)
+                if commit:
+                    conn.execute(text("DELETE FROM exercise_log WHERE id=:id"), {"id": old["id"]})
+                    conn.execute(text(
+                        "DELETE FROM exercise_session WHERE id=:sid AND is_pt=0 AND "
+                        "NOT EXISTS (SELECT 1 FROM exercise_log WHERE session_id=:sid)"), {"sid": old["session_id"]})
+
         # dry-run에서는 모든 INSERT/UPDATE가 `if commit:` 분기로 막혀 있어 이 트랜잭션에는
         # 아무 변경도 없다 (SELECT만 수행) -> engine.begin() 종료 시 커밋되어도 안전함.
 
@@ -618,6 +746,17 @@ def sync(commit: bool, xlsx_path: str | None, reset: bool):
     print(f"기존 운동에 빈 한/영 이름 채움: {len(filled_names)}건")
     for iid, col, val in filled_names[:50]:
         print(f"  ~ exercise_item#{iid}.{col} = {val}")
+
+    if cardio_rows is None:
+        print(f"유산소 탭('{CARDIO_TAB_NAME}'): 건너뜀 ({'탭 없음' if cardio_ready else 'DB 컬럼 없음'})")
+    else:
+        print(f"유산소 탭: {len(cardio_rows)}줄 / 새로 넣음 {len(cardio_new)} / 수정 {len(cardio_updated)} / 삭제 {len(cardio_deleted)}")
+        for c in cardio_new + cardio_updated:
+            tag = "+" if c in cardio_new else "~"
+            print(f"  {tag} {c.date} {c.name} {c.duration_min}분 {c.distance_km}km {c.kcal}kcal "
+                  f"심박 {c.avg_hr} | {c.speed_incline} {c.memo}".rstrip())
+        for m in cardio_deleted:
+            print(f"  - {m}")
 
     print(f"\n--- 무게/세트 샘플 (세션당 첫 운동, {len(preview_rows)}개) ---")
     for p in preview_rows[:20]:
