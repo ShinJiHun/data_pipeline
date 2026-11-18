@@ -1,7 +1,7 @@
 """
 보관한 블로그 라이딩 글(NAS persona/blog/athlete)을 휴먼 블로그 "자전거 일주기"(journal_post)로 옮긴다.
 
-- 본문: post.html 을 단순 HTML 로 정리(허용 태그만, 속성은 src/alt/href 만), 이미지는 web 크기(긴 변 1600px)로
+- 본문: post.html 을 단순 HTML 로 정리(허용 태그만, 속성은 src/alt/href 만), 이미지는 본문용 크기(긴 변 960px WebP)로
   /api/blog-archive/file?path=... 주소로 바꾼다(앱 BlogArchiveController 가 NAS 에서 서빙).
 - 글 맨 위: 그날의 라이딩 기록(거리·획득고도) → 활동 상세(지도·사진) 링크, 원문 링크.
 - 작성일: 원래 블로그 발행 시각. 공개(public).
@@ -36,7 +36,7 @@ SUB_MENU = {
 }
 # 블로그 날짜와 라이딩 기록 날짜가 어긋나 자동 연결하면 틀리는 글(영산강·제주: 5/1 기록이 1일차 경로)
 NO_ACTIVITY_LINK = {20, 21}
-WEB = 1600
+POST_SIZE = 960
 DATE_RE = re.compile(r"(20\d{2}|\d{2})[-./](\d{2})[-./](\d{2})")
 KEEP = {"p", "h2", "h3", "h4", "figure", "figcaption", "img", "ul", "ol", "li", "blockquote", "a", "strong", "b",
         "em", "i", "br", "hr", "table", "thead", "tbody", "tr", "td", "th", "pre", "code"}
@@ -52,20 +52,23 @@ def read_env(path):
     return env
 
 
-def web_image(folder: Path, rel_src: str) -> str | None:
-    """images/NN.ext → web/NN.jpg (없으면 만든다). 보관 폴더 기준 상대 경로를 돌려준다."""
+def post_image(folder: Path, rel_src: str):
+    """images/NN.ext → post/NN.webp (본문 폭에 맞춘 긴 변 960px WebP, 없으면 만든다).
+    돌려주는 값: (보관 폴더 기준 상대 경로, 가로, 세로) — 크기는 화면이 자리를 미리 잡게 img 에 넣는다."""
     src = folder / rel_src
     if not src.is_file():
         return None
-    dst = folder / "web" / (src.stem + ".jpg")
+    dst = folder / "post" / (src.stem + ".webp")
     if not dst.exists():
         dst.parent.mkdir(exist_ok=True)
         with Image.open(src) as im:
             im.seek(0)
             im = ImageOps.exif_transpose(im.convert("RGB"))
-            im.thumbnail((WEB, WEB))
-            im.save(dst, "JPEG", quality=82, optimize=True)
-    return str(dst.relative_to(BLOG_ROOT))
+            im.thumbnail((POST_SIZE, POST_SIZE))
+            im.save(dst, "WEBP", quality=78, method=6)
+    with Image.open(dst) as im:
+        w, h = im.size
+    return str(dst.relative_to(BLOG_ROOT)), w, h
 
 
 def clean_body(folder: Path) -> tuple[str, int]:
@@ -88,11 +91,13 @@ def clean_body(folder: Path) -> tuple[str, int]:
     for el in root.find_all(True):
         keep = {}
         if el.name == "img":
-            path = web_image(folder, el.get("src", ""))
-            if not path:
+            img = post_image(folder, el.get("src", ""))
+            if not img:
                 el.decompose()
                 continue
-            keep = {"src": "/api/blog-archive/file?path=" + quote(path), "alt": el.get("alt") or "", "loading": "lazy"}
+            path, w, h = img
+            keep = {"src": "/api/blog-archive/file?path=" + quote(path), "alt": el.get("alt") or "",
+                    "width": str(w), "height": str(h), "loading": "lazy", "decoding": "async"}
             images += 1
         elif el.name == "a" and el.get("href", "").startswith("http"):
             keep = {"href": el["href"], "target": "_blank", "rel": "noopener noreferrer"}
