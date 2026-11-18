@@ -108,20 +108,55 @@ def clean_body(folder: Path) -> tuple[str, int]:
     return out.strip(), images
 
 
-def activity_box(cur_riding, no, title, url):
-    lines = []
+KO_DATE_RE = re.compile(r"(20\d{2})년\s*(\d{1,2})월\s*(\d{1,2})일")
+# 제목에 날짜가 없는 글의 작성일 (라이딩 기록·제목 날짜가 없을 때) — 프롤로그는 1일차 전날
+DATE_OVERRIDE = {16: datetime(2024, 4, 3, 9, 0)}
+
+
+def title_date(title):
+    """제목의 첫 날짜(기간이면 시작일). '24-04-04', '2024-04-05', '2020년 04월 30일' 형식."""
     m = DATE_RE.search(title)
-    if m and no not in NO_ACTIVITY_LINK:
+    if m:
         y = int(m.group(1)); y = y + 2000 if y < 100 else y
-        day = f"{y}-{m.group(2)}-{m.group(3)}"
-        cur_riding.execute("""SELECT id, total_distance, total_ascent FROM activity_core
-                              WHERE user_id = 1 AND DATE(start_time) = %s ORDER BY total_distance DESC LIMIT 1""", (day,))
-        r = cur_riding.fetchone()
-        if r:
-            km = f"{(r[1] or 0) / 1000:.1f}km"
-            up = f" · 획득고도 {r[2]:,.0f}m" if r[2] else ""
-            lines.append(f'<p>🚴 <strong>{day} 라이딩 기록</strong> · {km}{up} — '
-                         f'<a href="/records/riding/{r[0]}">지도와 사진 보기 →</a></p>')
+        return datetime(y, int(m.group(2)), int(m.group(3)))
+    m = KO_DATE_RE.search(title)
+    if m:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def find_activity(cur_riding, no, title):
+    """제목 날짜의 가장 긴 라이딩 기록 → (id, 출발 시각, 거리 m, 획득고도 m) 또는 None"""
+    day = title_date(title)
+    if not day or no in NO_ACTIVITY_LINK:
+        return None
+    cur_riding.execute("""SELECT id, start_time, total_distance, total_ascent FROM activity_core
+                          WHERE user_id = 1 AND DATE(start_time) = %s ORDER BY total_distance DESC LIMIT 1""",
+                       (day.date(),))
+    return cur_riding.fetchone()
+
+
+def post_date(no, title, meta, act):
+    """작성일: 라이딩 기록 출발 시각 → 제목 날짜 → 지정값 → 블로그 게시일"""
+    if act:
+        return act[1]
+    d = title_date(title) or DATE_OVERRIDE.get(no)
+    if d:
+        return d.replace(hour=9) if d.hour == 0 else d   # 시각 정보가 없으면 오전 9시
+    return datetime.fromisoformat(meta["published_at"]).replace(tzinfo=None) if meta.get("published_at") else datetime.now()
+
+
+def ride_button(act, label):
+    return (f'<p><a class="ride-link-btn" href="/records/riding/{act[0]}">🗺️ {label}</a></p>')
+
+
+def activity_box(act, no, url):
+    lines = []
+    if act:
+        km = f"{(act[2] or 0) / 1000:.1f}km"
+        up = f" · 획득고도 {act[3]:,.0f}m" if act[3] else ""
+        lines.append(f'<p>🚴 <strong>{act[1]:%Y-%m-%d %H:%M} 출발 라이딩 기록</strong> · {km}{up}</p>')
+        lines.append(ride_button(act, "라이딩 기록 보기 (지도·사진)"))
     lines.append(f'<p data-blog-no="{no}">📝 원문: <a href="{html.escape(url)}" target="_blank" rel="noopener noreferrer">'
                  f'{html.escape(url.replace("https://", ""))}</a></p>')
     return "<blockquote>" + "".join(lines) + "</blockquote>"
@@ -155,8 +190,11 @@ def main():
                     print(f"  ⚠️ #{no} 보관 폴더 없음"); continue
                 meta = json.loads((folder / "meta.json").read_text())
                 body, n_img = clean_body(folder)
-                content = activity_box(rc, no, meta["title"], meta["url"]) + body
-                created = datetime.fromisoformat(meta["published_at"]).replace(tzinfo=None) if meta.get("published_at") else datetime.now()
+                act = find_activity(rc, no, meta["title"])
+                content = activity_box(act, no, meta["url"]) + body
+                if act:   # 글 끝에도 기록으로 가는 버튼
+                    content += "<p><br></p>" + ride_button(act, "이 날의 라이딩 기록 보기 →")
+                created = post_date(no, meta["title"], meta, act)
                 sub_id = subs[sub_name]
                 jc.execute("SELECT id FROM journal_post WHERE content LIKE %s LIMIT 1", (f'%data-blog-no="{no}"%',))
                 row = jc.fetchone()
@@ -173,7 +211,7 @@ def main():
                         jc.execute("""INSERT INTO journal_post (sub_id, title, content, created_at, updated_at, visibility)
                                       VALUES (%s,%s,%s,%s,NOW(6),'public')""", (sub_id, meta["title"], content, created))
                 linked = "라이딩 연결" if "/records/riding/" in content else "연결 없음"
-                print(f"  {action} [{sub_name}] #{no} {meta['title'][:34]} · 사진 {n_img} · {linked} · {len(content)//1024}KB")
+                print(f"  {action} [{sub_name}] #{no} {meta['title'][:34]} · {created:%Y-%m-%d %H:%M} · 사진 {n_img} · {linked} · {len(content)//1024}KB")
         (j.rollback if a.dry_run else j.commit)()
     finally:
         j.close(); r.close()
