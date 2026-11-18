@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import requests
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 BASE = "https://blog.tho881.me"
 OUT = Path("/mnt/200gb/NAS/persona/blog")
@@ -76,6 +76,8 @@ def slugify(title: str) -> str:
 
 # ── HTML → Markdown (티스토리 본문에 나오는 태그만 단순 변환) ──────────────
 def md(node, depth=0) -> str:
+    if isinstance(node, Comment):          # <!-- System - START --> 같은 티스토리 주석
+        return ""
     if isinstance(node, NavigableString):
         return re.sub(r"\s+", " ", str(node))
     if not isinstance(node, Tag):
@@ -145,6 +147,35 @@ def tidy(text: str) -> str:
     return text.strip() + "\n"
 
 
+# 본문 뒤에 티스토리가 붙이는 것들(공유·구독·좋아요 버튼, "카테고리의 다른 글" 표, 광고, 주석)
+TISTORY_CHROME = (".another_category, .container_postbtn, .postbtn_like, .wrap_btn, .layer_post, "
+                  ".revenue_unit_wrap, [data-tistory-react-app], button, script, style, noscript")
+
+
+def strip_tistory_chrome(article):
+    for el in article.select(TISTORY_CHROME):
+        el.decompose()
+    for c in article.find_all(string=lambda t: isinstance(t, Comment)):
+        c.extract()
+    return article
+
+
+def rebuild_local():
+    """저장된 post.html 만으로 post.html/post.md 를 다시 만든다(내려받기 없음)."""
+    for folder in sorted(OUT.glob("*/*_*")):
+        html_path = folder / "post.html"
+        if not html_path.is_file():
+            continue
+        meta = json.loads((folder / "meta.json").read_text())
+        article = strip_tistory_chrome(BeautifulSoup(html_path.read_text(), "lxml"))
+        root = article.select_one("#article-view") or article.body
+        html_path.write_text(str(root), encoding="utf-8")
+        (folder / "post.md").write_text(
+            f"# {meta['title']}\n\n> {meta['published_at'][:10]} · {meta['category']} · [원문]({meta['url']})\n\n{tidy(md(root))}",
+            encoding="utf-8")
+        print("rebuilt", folder.relative_to(OUT))
+
+
 def fetch(session, url):
     r = session.get(url, headers=UA, timeout=30)
     time.sleep(DELAY)
@@ -171,6 +202,7 @@ def archive_post(session, no: int):
     article = soup.select_one("#article-view") or soup.select_one(".tt_article_useless_p_margin")
     if article is None:
         return {"no": no, "status": "no-article"}
+    strip_tistory_chrome(article)
 
     og = lambda p: (soup.find("meta", property=p) or {}).get("content", "")
     title = og("og:title") or (soup.title.string if soup.title else f"post {no}")
@@ -234,7 +266,10 @@ def archive_post(session, no: int):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", type=int)
+    ap.add_argument("--rebuild-local", action="store_true", help="내려받지 않고 저장된 post.html 로 post.md 재생성")
     args = ap.parse_args()
+    if args.rebuild_local:
+        return rebuild_local()
     nos = args.only or list(range(1, MAX_NO + 1))
     OUT.mkdir(parents=True, exist_ok=True)
     index_path = OUT / "index.json"
