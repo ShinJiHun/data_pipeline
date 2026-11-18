@@ -19,10 +19,10 @@ DB_URL = (
 MY_HEIGHT = 167.0
 
 # 경로 설정
-INBODY_RAW_DIR       = "/mnt/200gb/NAS/inbody/raw"
-INBODY_PROCESSED_DIR = "/mnt/200gb/NAS/inbody/processed"
-INBODY_FAILED_DIR    = "/mnt/200gb/NAS/inbody/failed"
-INBODY_JSON_DIR      = "/mnt/200gb/NAS/inbody/json"
+INBODY_RAW_DIR       = "/mnt/200gb/NAS/health/inbody/raw"
+INBODY_PROCESSED_DIR = "/mnt/200gb/NAS/health/inbody/processed"
+INBODY_FAILED_DIR    = "/mnt/200gb/NAS/health/inbody/failed"
+INBODY_JSON_DIR      = "/mnt/200gb/NAS/health/inbody/json"
 
 os.makedirs(INBODY_PROCESSED_DIR, exist_ok=True)
 os.makedirs(INBODY_FAILED_DIR, exist_ok=True)

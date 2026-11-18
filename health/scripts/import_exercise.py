@@ -22,7 +22,7 @@ DB_CONFIG = {
     "collation": "utf8mb4_unicode_ci",
 }
 
-CSV_PATH = "/mnt/200gb/NAS/data/health/exercise.csv"
+CSV_PATH = "/mnt/200gb/NAS/health/import/exercise.csv"
 USER_ID  = 1
 
 # PT 세션 판별: body_part에 PT 키워드 포함 여부 (필요시 수동 조정)

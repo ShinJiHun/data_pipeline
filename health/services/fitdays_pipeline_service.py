@@ -19,9 +19,9 @@ DB_URL = (
     f"@{os.getenv('DB_HOST', '172.17.0.1')}:3306/riding_db"
 )
 
-FITDAYS_RAW_DIR       = "/mnt/200gb/NAS/fitdays/raw"
-FITDAYS_PROCESSED_DIR = "/mnt/200gb/NAS/fitdays/processed"
-FITDAYS_FAILED_DIR    = "/mnt/200gb/NAS/fitdays/failed"
+FITDAYS_RAW_DIR       = "/mnt/200gb/NAS/health/fitdays/raw"
+FITDAYS_PROCESSED_DIR = "/mnt/200gb/NAS/health/fitdays/processed"
+FITDAYS_FAILED_DIR    = "/mnt/200gb/NAS/health/fitdays/failed"
 
 os.makedirs(FITDAYS_RAW_DIR,       exist_ok=True)
 os.makedirs(FITDAYS_PROCESSED_DIR, exist_ok=True)

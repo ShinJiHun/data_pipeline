@@ -13,7 +13,7 @@ from riding_data_parser.services.segment_match_service import match_segments
 
 app = FastAPI()
 
-UPLOAD_DIR = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/") + "fit/"
+UPLOAD_DIR = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/") + "fit/"
 
 def get_db():
     db_url = os.getenv("PYTHON_DB_URL")

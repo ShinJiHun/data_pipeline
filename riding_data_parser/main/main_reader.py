@@ -73,7 +73,7 @@ def main():
     # ---------------------------------------------
     # 입력 디렉토리
     # ---------------------------------------------
-    base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+    base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/")
 
     # 파일 유형별 설정: (소스폴더, 확장자, 파서, 성공폴더, 실패폴더)
     file_types = [
@@ -159,13 +159,13 @@ def process_single_file(file_path: str, user_id: int = 1, ride_type: str = None,
         core.permanent_no = permanent_no
         core.permanent_gpx_file = permanent_gpx_file
         saver.save_with_points(core, points, gear_usages)
-        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/fit/")
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/fit/")
         folder_name = ext.lstrip(".")
         dest_dir = os.path.join(base_dir, f"{folder_name}_suc")
         move_file(file_path, dest_dir)
         return core.id  # ← activity_core_id 반환
     except Exception as e:
-        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/")
         folder_name = ext.lstrip(".")
         dest_dir = os.path.join(base_dir, f"{folder_name}_fail")
         move_file(file_path, dest_dir)
@@ -200,7 +200,7 @@ def process_multiple_files(file_path_list: list, user_id: int = 1, ride_type: st
         saver.save_with_points(core, points, gear_usages)
 
         # 성공한 모든 파일을 fit_suc 폴더로 이동
-        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/")
         suc_dir = os.path.join(base_dir, "fit_suc")
         for fp in file_path_list:
             move_file(fp, suc_dir)
@@ -208,7 +208,7 @@ def process_multiple_files(file_path_list: list, user_id: int = 1, ride_type: st
         return core.id
     except Exception as e:
         # 실패 시 모든 파일을 fit_fail 폴더로 이동
-        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/data/")
+        base_dir = os.getenv("DATA_BASE_DIR", "/mnt/200gb/NAS/riding/")
         fail_dir = os.path.join(base_dir, "fit_fail")
         for fp in file_path_list:
             move_file(fp, fail_dir)

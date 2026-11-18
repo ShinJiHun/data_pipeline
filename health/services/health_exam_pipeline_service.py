@@ -25,9 +25,9 @@ DB_CONFIG = {
     "charset":  "utf8mb4",
 }
 
-RAW_DIR       = "/mnt/200gb/NAS/health_check/raw"
-PROCESSED_DIR = "/mnt/200gb/NAS/health_check/processed"
-FAILED_DIR    = "/mnt/200gb/NAS/health_check/failed"
+RAW_DIR       = "/mnt/200gb/NAS/health/health_check/raw"
+PROCESSED_DIR = "/mnt/200gb/NAS/health/health_check/processed"
+FAILED_DIR    = "/mnt/200gb/NAS/health/health_check/failed"
 
 os.makedirs(RAW_DIR,       exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)

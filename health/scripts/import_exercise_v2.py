@@ -20,7 +20,7 @@ DB_CONFIG = {
     "charset":  "utf8mb4",
 }
 
-CSV_PATH = "/mnt/200gb/NAS/data/health/exercise.csv"
+CSV_PATH = "/mnt/200gb/NAS/health/import/exercise.csv"
 USER_ID  = 1
 
 

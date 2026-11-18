@@ -3,9 +3,9 @@ LifeMetrics - 통합 Watcher
 여러 NAS 폴더를 동시 감시하여 자동 처리
 
 감시 대상:
-  /mnt/200gb/NAS/inbody/raw/       → 인바디 OCR → DB
-  /mnt/200gb/NAS/fitdays/raw/      → FitDays OCR → DB
-  /mnt/200gb/NAS/health_check/raw/ → 건강검진 OCR → DB
+  /mnt/200gb/NAS/health/inbody/raw/       → 인바디 OCR → DB
+  /mnt/200gb/NAS/health/fitdays/raw/      → FitDays OCR → DB
+  /mnt/200gb/NAS/health/health_check/raw/ → 건강검진 OCR → DB
 """
 
 import os
@@ -28,17 +28,17 @@ from services.health_exam_pipeline_service import process_file as process_health
 # 감시 대상 설정
 # ────────────────────────────────────────────
 WATCH_TARGETS = {
-    "/mnt/200gb/NAS/inbody/raw": {
+    "/mnt/200gb/NAS/health/inbody/raw": {
         "name":       "InBody",
         "extensions": (".png", ".jpg", ".jpeg"),
         "handler":    process_inbody,
     },
-    "/mnt/200gb/NAS/fitdays/raw": {
+    "/mnt/200gb/NAS/health/fitdays/raw": {
         "name":       "FitDays",
         "extensions": (".png", ".jpg", ".jpeg"),
         "handler":    process_fitdays,
     },
-    "/mnt/200gb/NAS/health_check/raw": {
+    "/mnt/200gb/NAS/health/health_check/raw": {
         "name":       "HealthExam",
         "extensions": (".pdf", ".png", ".jpg", ".jpeg"),
         "handler":    process_health_exam,

@@ -8,7 +8,7 @@ from io import BytesIO
 from riding_data_parser.model.models import ActivityImage, ActivityCore
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-IMAGE_SAVE_DIR = "/home/tho881/project/NAS/images/maps/"  # 저장 경로 수정 가능
+IMAGE_SAVE_DIR = "/mnt/200gb/NAS/riding/maps/"  # 저장 경로 수정 가능
 
 
 def save_activity_image(db, core: ActivityCore):

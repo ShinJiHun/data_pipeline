@@ -8,7 +8,7 @@ import fitparse
 from riding_data_parser.model.db import SessionLocal
 from riding_data_parser.model.models import ActivityCore
 
-FIT_DIR = "/data/home/tho881/project/NAS/data/fit/"
+FIT_DIR = "/mnt/200gb/NAS/riding/fit/"
 
 
 def extract_session_speeds(file_path):
