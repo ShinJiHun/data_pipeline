@@ -16,7 +16,7 @@ import html
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -34,8 +34,8 @@ SUB_MENU = {
     "투어링": [16, 14, 15, 29, 32, 44, 13, 20, 21],
     "랜도너스": [31, 34],
 }
-# 블로그 날짜와 라이딩 기록 날짜가 어긋나 자동 연결하면 틀리는 글(영산강·제주: 5/1 기록이 1일차 경로)
-NO_ACTIVITY_LINK = {20, 21}
+# 제목 날짜와 실제 라이딩 날짜가 다른 글 → 기록을 찾을 날짜 (영산강·제주: 제목이 하루 이르게 적힘, 사용자 확인 2026-11-18)
+ACTIVITY_DATE = {20: date(2020, 5, 1), 21: date(2020, 5, 2)}
 POST_SIZE = 960
 DATE_RE = re.compile(r"(20\d{2}|\d{2})[-./](\d{2})[-./](\d{2})")
 KEEP = {"p", "h2", "h3", "h4", "figure", "figcaption", "img", "ul", "ol", "li", "blockquote", "a", "strong", "b",
@@ -127,12 +127,12 @@ def title_date(title):
 
 def find_activity(cur_riding, no, title):
     """제목 날짜의 가장 긴 라이딩 기록 → (id, 출발 시각, 거리 m, 획득고도 m) 또는 None"""
-    day = title_date(title)
-    if not day or no in NO_ACTIVITY_LINK:
+    day = ACTIVITY_DATE.get(no) or (title_date(title) and title_date(title).date())
+    if not day:
         return None
     cur_riding.execute("""SELECT id, start_time, total_distance, total_ascent FROM activity_core
                           WHERE user_id = 1 AND DATE(start_time) = %s ORDER BY total_distance DESC LIMIT 1""",
-                       (day.date(),))
+                       (day,))
     return cur_riding.fetchone()
 
 
