@@ -71,7 +71,8 @@ def post_image(folder: Path, rel_src: str):
     return str(dst.relative_to(BLOG_ROOT)), w, h
 
 
-def clean_body(folder: Path) -> tuple[str, int]:
+def clean_body(folder: Path, keep_align: bool = False) -> tuple[str, int]:
+    """keep_align=True 면 문단·제목의 text-align(티스토리 가운데 정렬 등)을 남기고, 빈 문단(&nbsp;)은 <p></p> 로 둔다."""
     soup = BeautifulSoup((folder / "post.html").read_text(), "lxml")
     root = soup.select_one("#article-view") or soup.body
     for el in root.select(".another_category, .container_postbtn, .postbtn_like, .wrap_btn, .layer_post, "
@@ -101,10 +102,32 @@ def clean_body(folder: Path) -> tuple[str, int]:
             images += 1
         elif el.name == "a" and el.get("href", "").startswith("http"):
             keep = {"href": el["href"], "target": "_blank", "rel": "noopener noreferrer"}
+        elif keep_align and el.name in ("p", "h2", "h3", "h4"):
+            m = re.search(r"text-align:\s*(left|center|right|justify)", el.get("style", ""))
+            if m and m.group(1) != "left":
+                keep = {"style": f"text-align: {m.group(1)};"}
         el.attrs = keep
     out = "".join(str(c) for c in root.children)
+    pres = []
+    if keep_align:   # 코드 블록(<pre>)의 줄바꿈은 지키고, 앞뒤 빈 줄만 정리
+        def _keep(m):
+            pres.append(re.sub(r"^\n+|\n+(?=</code>|$)", "", m.group(0).replace("<pre><code>\n", "<pre><code>")))
+            return f"\x00PRE{len(pres) - 1}\x00"
+        out = re.sub(r"<pre>.*?</pre>", _keep, out, flags=re.S)
     out = re.sub(r"\s*\n\s*", " ", out)                       # 화면이 pre-wrap 이라 줄바꿈 제거
-    out = re.sub(r"(<p>(\s|&nbsp;|\xa0|<br/?>)*</p>\s*){2,}", "<p><br></p>", out)  # 빈 문단 여러 개 → 하나
+    if keep_align:
+        # 빈 문단 = 한 줄 간격(티스토리 방식). 정렬 속성이 붙은 빈 문단도 같은 취급, 여러 개 연속은 하나로.
+        out = re.sub(r"<p(?: style=\"[^\"]*\")?>(\s|&nbsp;|\xa0|<br/?>)*</p>", "<p></p>", out)
+        out = re.sub(r"(<p></p>\s*){2,}", "<p></p>", out)
+        out = re.sub(r">\s+<", "><", out)
+        out = re.sub(r"<p>(<figure>.*?</figure>)</p>", r"\1", out)                 # p 안의 figure 꺼내기
+        out = re.sub(r"(<hr/>)(<p></p>)+|(<p></p>)+(?=<hr/>|<h[234][ >])", r"\1", out)  # 구분선·제목 옆 빈 줄은 여백이 대신함
+        out = re.sub(r"^\s*(<p></p>)+|(<p></p>)+\s*$", "", out.strip())
+        out = re.sub(r"(<p></p>)+(?=\x00PRE)|(?<=\x00)(<p></p>)+(?=<p></p>)", "", out)
+        out = re.sub(r"\x00PRE(\d+)\x00", lambda m: pres[int(m.group(1))], out)
+        out = re.sub(r"</pre>\s*(<p></p>)*", "</pre>", out)        # 코드 블록 뒤 빈 줄은 여백이 대신함
+    else:
+        out = re.sub(r"(<p>(\s|&nbsp;|\xa0|<br/?>)*</p>\s*){2,}", "<p><br></p>", out)  # 빈 문단 여러 개 → 하나
     return out.strip(), images
 
 

@@ -34,7 +34,7 @@ SUB_MENU = {
 
 
 def footer(no: int, url: str, published: datetime) -> str:
-    return (f'<p><br></p><p data-blog-no="{no}">📝 원문: <a href="{html.escape(url)}" target="_blank" '
+    return (f'<p></p><p data-blog-no="{no}">📝 원문: <a href="{html.escape(url)}" target="_blank" '
             f'rel="noopener noreferrer">티스토리 ({published:%Y-%m-%d})</a></p>')
 
 
@@ -64,7 +64,7 @@ def main():
                 if not folder:
                     print(f"  ⚠️ #{no} 보관 폴더 없음"); continue
                 meta = json.loads((folder / "meta.json").read_text())
-                body, n_img = clean_body(folder)
+                body, n_img = clean_body(folder, keep_align=True)
                 # 본문 첫 제목(h1)은 clean_body 가 태그를 벗겨 맨 글자로 남는다 → h2 로 감싼다.
                 m = re.match(r"\s*([^<]+?)\s*(?=<)", body)
                 if m and m.group(1).strip():
