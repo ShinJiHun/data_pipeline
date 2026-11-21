@@ -35,7 +35,7 @@ GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 BASE_LIST_URL = "http://www.korearandonneurs.kr:8080/jsp/randonneurs/permanents"
 BASE_DETAIL_URL = "http://www.korearandonneurs.kr:8080/jsp/permanent/info-"
 
-SAVE_DIR = "html_logs"
+SAVE_DIR = "/mnt/200gb/NAS/riding/permanent/html"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # ==========================================

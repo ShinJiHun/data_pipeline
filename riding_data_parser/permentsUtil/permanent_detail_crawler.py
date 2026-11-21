@@ -19,7 +19,7 @@ DB_CONFIG = {
 }
 
 BASE_URL = "http://www.korearandonneurs.kr:8080/jsp/permanent/"
-SAVE_DIR = "html_logs"
+SAVE_DIR = "/mnt/200gb/NAS/riding/permanent/html"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 def get_db_connection():

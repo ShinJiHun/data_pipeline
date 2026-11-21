@@ -6,7 +6,7 @@
 
 API_BASE="http://localhost:8080"
 USER_ID=1
-LOGDIR="/mnt/200gb/project/data_pipeline/cycle_data_parser/main/logs"
+LOGDIR="/mnt/200gb/logs/riding"
 LOGFILE="$LOGDIR/ai_analysis.log"
 
 mkdir -p "$LOGDIR"

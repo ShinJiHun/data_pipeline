@@ -32,7 +32,7 @@ load_dotenv(find_dotenv())
 # 설정
 # ========================================
 
-LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR = Path("/mnt/200gb/logs/health")
 LOG_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(

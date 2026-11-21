@@ -1,7 +1,7 @@
 #!/bin/bash
 
 BASE_DIR=/home/tho881p/project/data_pipeline/lotto_parser
-LOG_DIR=/home/tho881p/project/data_pipeline/logs
+LOG_DIR=/mnt/200gb/logs/lotto
 
 cd $BASE_DIR
 
