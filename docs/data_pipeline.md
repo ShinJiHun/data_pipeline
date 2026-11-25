@@ -83,7 +83,7 @@ cron·watcher·FastAPI 로 돌며, 결과를 MariaDB(`riding_db` 중심)에 쌓�
 ## 5. 알려진 기술 부채 (현재 상태 기록용)
 - DB 접근 방식이 섞여 있음: SQLAlchemy / PyMySQL 직접 / mysql.connector
 - `.env` 로드 경로가 제각각 (`/mnt/200gb/apps/.env`, 저장소 `.env`, `find_dotenv()`), 절대경로 `sys.path.insert` 다수
-- `lotto_parser/main/lotto_main.py` 에 DB 접속 정보가 코드에 하드코딩됨
+- `lotto_parser/main/lotto_main.py` 의 하드코딩된 DB 접속 정보는 `.env`(`LOTTO_DB_USER/PASSWORD/NAME`)로 옮김(2026-11-25). 옛 비밀번호가 git 이력에 남아 있으므로 비밀번호 교체 필요
 - `requirements.txt` 가 루트 + 3개 하위로 나뉘고, 실제 쓰는 패키지(watchdog, fastapi, playwright, bs4, mysql-connector, anthropic, geopandas 등)가 루트에 없음
 - 남은 잔여 파일: `lotto_main.py.back`, `lotto_parser/services/test.py`, `riding_data_parser/main/To`(빈 파일), `DEVREQ_TEST.md`, `import_exercise.py`(v2 로 대체)
 - 백업 테이블 잔존: `food_log_bak_20261101`, `food_daily_summary_bak_20261101`, `health_checkup_bak_20261024`

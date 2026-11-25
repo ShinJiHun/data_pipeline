@@ -42,7 +42,7 @@
 
 | # | 항목 | 작업 | 제안 |
 |---|---|---|---|
-| E1 | 하드코딩된 DB 접속 정보 제거 | `lotto_parser/main/lotto_main.py` → `.env` 로 이동, 비밀번호 교체 | P1 |
+| E1 | 하드코딩된 DB 접속 정보 제거 | 코드 수정 완료(`.env` 의 `LOTTO_DB_*`). 남은 일: DB `lotto` 계정 비밀번호 교체 + `.env` 반영 | P1 |
 | E2 | cron 스케줄 문서화 | 서버 crontab 을 `docs/` 에 기록 (비밀값 제외) | P2 |
 | E3 | requirements 정리 | 실제 쓰는 패키지를 루트 `requirements.txt` 로 통합, venv 와 맞추기 | P2 |
 | E4 | 환경변수·DB 접근 통일 | `.env` 경로 하나로, DB 접근은 `common/database.py` 로 모으기 (점진적) | P3 |

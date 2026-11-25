@@ -1,3 +1,7 @@
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 from sqlalchemy import create_engine, text
 import requests
 import json
@@ -17,7 +21,11 @@ def detect_db_env():
 
 
 def build_db_url(host, port):
-    return f"mysql+pymysql://lotto:lotto1234!@{host}:{port}/lotto"
+    # 접속 정보는 .env 에서 읽는다 (LOTTO_DB_PASSWORD 필수)
+    user = os.getenv("LOTTO_DB_USER", "lotto")
+    password = quote_plus(os.environ["LOTTO_DB_PASSWORD"])
+    name = os.getenv("LOTTO_DB_NAME", "lotto")
+    return f"mysql+pymysql://{user}:{password}@{host}:{port}/{name}"
 
 
 # ======================================================
