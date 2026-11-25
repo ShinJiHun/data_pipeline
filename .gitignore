@@ -57,3 +57,6 @@ health/scripts/credentials/
 
 # Google 서비스 계정 키
 service_account*.json
+
+# 에이전트 전용 venv
+venv-agent/

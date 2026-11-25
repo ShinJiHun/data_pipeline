@@ -1,0 +1,8 @@
+# 에이전트 전용 venv(venv-agent) 용 — 기존 venv 의 openai/httpx 고정 버전과 분리
+langgraph>=0.4
+langchain-core>=0.3
+langchain-openai>=0.3
+pydantic>=2.7
+SQLAlchemy>=2.0
+PyMySQL>=1.1
+python-dotenv>=1.0
