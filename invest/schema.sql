@@ -69,3 +69,33 @@ CREATE TABLE IF NOT EXISTS invest_snapshot (
     REFERENCES invest_account_snapshot (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   COMMENT='토스증권 보유 종목 스냅샷';
+
+-- 거래내역 (GET /api/v1/transactions). API 가 거래 식별자를 주지 않아서
+-- 매 실행마다 계좌별로 [미결제 전체 + 최근 N일 결제분] 을 지우고 다시 넣는다(멱등).
+-- 금액은 currency 통화, 부호 없음. 현금 방향은 transaction_type 으로 판단(SELL·DEPOSIT·DIVIDEND… 유입).
+CREATE TABLE IF NOT EXISTS invest_transaction (
+  id                        BIGINT AUTO_INCREMENT PRIMARY KEY,
+  account_suffix            VARCHAR(4)    NOT NULL,
+  settlement_date           DATE          NOT NULL COMMENT '결제일(KST), 미결제는 예상 결제일',
+  settled                   TINYINT(1)    NOT NULL COMMENT '결제 완료 여부',
+  transaction_time          DATETIME      NULL COMMENT '결제 처리 시각(KST), 미결제는 NULL',
+  transaction_type          VARCHAR(30)   NOT NULL COMMENT 'BUY/SELL/DIVIDEND/DEPOSIT/…',
+  is_cancellation           TINYINT(1)    NOT NULL DEFAULT 0,
+  market                    VARCHAR(4)    NOT NULL COMMENT 'KR / US',
+  currency                  VARCHAR(3)    NOT NULL,
+  asset_class               VARCHAR(10)   NULL COMMENT 'STOCK/BOND/OPTION, 현금 거래는 NULL',
+  symbol                    VARCHAR(40)   NULL,
+  isin_code                 VARCHAR(12)   NULL,
+  quantity                  DECIMAL(24,8) NULL,
+  filled_price              DECIMAL(24,8) NULL,
+  amount                    DECIMAL(24,4) NULL,
+  commission                DECIMAL(24,4) NULL,
+  tax                       DECIMAL(24,4) NULL,
+  net_amount                DECIMAL(24,4) NULL COMMENT '수수료·세금 반영 정산금액(절대값)',
+  exchange_rate             DECIMAL(16,4) NULL COMMENT 'USD 결제 완료 거래의 환율',
+  fetched_at                DATETIME      NOT NULL,
+  created_at                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_invest_tx_acct_date (account_suffix, settlement_date),
+  KEY idx_invest_tx_symbol (symbol, settlement_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='토스증권 거래내역';

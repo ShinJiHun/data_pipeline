@@ -13,7 +13,7 @@ US_CLOSE 의 snapshot_date 는 실행일(KST)이며, 직전 미국 거래일 장
 
 import argparse
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -63,6 +63,46 @@ def _fetch_items(cur, account_snapshot_id) -> dict:
     return {(r["market"], r["symbol"]): r for r in cur.fetchall()}
 
 
+TRADE_TYPES = ("BUY", "SELL", "SECURITIES_TRANSFER_IN", "SECURITIES_TRANSFER_OUT")
+CASH_EVENT_TYPES = ("DIVIDEND", "INTEREST", "DEPOSIT", "WITHDRAWAL", "EXCHANGE_IN", "EXCHANGE_OUT", "FEE")
+
+
+def _tx_dict(r) -> dict:
+    return {
+        "type": r["transaction_type"], "settled": bool(r["settled"]), "cancellation": bool(r["is_cancellation"]),
+        "settlement_date": str(r["settlement_date"]), "market": r["market"], "currency": r["currency"],
+        "symbol": r["symbol"], "quantity": _num(r["quantity"]), "filled_price": _num(r["filled_price"]),
+        "amount": _num(r["amount"]), "net_amount": _num(r["net_amount"]),
+    }
+
+
+def _fetch_activity(cur, suffix, prev_date, snapshot_date) -> tuple[dict, list[dict]]:
+    """
+    (종목별 매매, 현금 이벤트) 를 돌려준다.
+    - 매매: 미결제 전체 + (prev_date, snapshot_date] 에 결제된 매매. 국내는 T+2 결제라 당일 매매는 미결제로 잡힌다.
+    - 현금 이벤트(배당·입출금·환전·이자·수수료): (prev_date, snapshot_date] 결제분.
+    invest_transaction 은 최신 상태만 들고 있으므로(미결제는 매 실행 교체) 오늘자 분석에 맞춘 기준이다.
+    """
+    lower = prev_date or (snapshot_date - timedelta(days=7))
+    try:
+        cur.execute(
+            "SELECT * FROM invest_transaction WHERE account_suffix=%s AND "
+            "(settled=0 OR (settlement_date > %s AND settlement_date <= %s)) "
+            "ORDER BY settlement_date, id",
+            (suffix, lower, snapshot_date),
+        )
+    except Exception:  # 거래내역 테이블이 아직 없는 DB
+        return {}, []
+    trades: dict = {}
+    events: list[dict] = []
+    for r in cur.fetchall():
+        if r["transaction_type"] in TRADE_TYPES and r["symbol"]:
+            trades.setdefault((r["market"], r["symbol"]), []).append(_tx_dict(r))
+        elif r["transaction_type"] in CASH_EVENT_TYPES and r["settled"]:
+            events.append(_tx_dict(r))
+    return trades, events
+
+
 def compute_snapshot_diff(conn, snapshot_date: date, session: str, account_suffix: str | None = None) -> list[dict]:
     """
     snapshot_date·session 의 스냅샷을 직전 스냅샷과 비교한다. 계좌별 dict 목록을 돌려준다.
@@ -95,6 +135,7 @@ def compute_snapshot_diff(conn, snapshot_date: date, session: str, account_suffi
             prev = _fetch_account(cur, snapshot_date, session, suffix, before=True)
             cur_items = _fetch_items(cur, current["id"])
             prev_items = _fetch_items(cur, prev["id"]) if prev else {}
+            trades, cash_events = _fetch_activity(cur, suffix, prev["snapshot_date"] if prev else None, snapshot_date)
 
             holdings, new, closed, qty_changed = [], [], [], []
             for key in sorted(set(cur_items) | set(prev_items)):
@@ -122,6 +163,7 @@ def compute_snapshot_diff(conn, snapshot_date: date, session: str, account_suffi
                                        p[f] if p else None)
                 entry["daily_pnl"] = _num(c["daily_pnl"]) if c else None
                 entry["daily_pnl_rate"] = _num(c["daily_pnl_rate"]) if c else None
+                entry["trades"] = trades.pop(key, [])
                 holdings.append(entry)
 
             results.append({
@@ -133,6 +175,9 @@ def compute_snapshot_diff(conn, snapshot_date: date, session: str, account_suffi
                 "totals": {f: _change(current[f], prev[f] if prev else None) for f in ACCOUNT_DIFF_FIELDS},
                 "holdings": holdings,
                 "summary": {"new": new, "closed": closed, "quantity_changed": qty_changed},
+                # 보유 목록에 없는 종목의 매매(당일 사고 판 종목 등)
+                "other_trades": [t for ts in trades.values() for t in ts],
+                "cash_events": cash_events,
             })
     return results
 

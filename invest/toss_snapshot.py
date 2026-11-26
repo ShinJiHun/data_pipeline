@@ -6,6 +6,9 @@
     venv/bin/python -m invest.toss_snapshot                          # riding_db_dev 에 저장 (세션 자동 판별)
     venv/bin/python -m invest.toss_snapshot --session US_CLOSE       # 세션 지정
     venv/bin/python -m invest.toss_snapshot --db riding_db --allow-prod   # 운영 DB (관리자 확인 후에만)
+    venv/bin/python -m invest.toss_snapshot --tx-from 2026-01-01     # 거래내역 과거분 백필 (처음 1회)
+
+거래내역: 매 실행 시 결제일 최근 10일 + 미결제 전체를 받아 그 범위를 교체 저장(invest_transaction).
 
 필요 환경변수(.env):
     TOSS_CLIENT_ID, TOSS_CLIENT_SECRET
@@ -16,6 +19,7 @@ API 명세: https://openapi.tossinvest.com/openapi-docs/latest/openapi.json (v1.
     POST /oauth2/token      OAuth2 client credentials (form-urlencoded)
     GET  /api/v1/accounts   계좌 목록 → accountSeq
     GET  /api/v1/holdings   보유 주식 (헤더 X-Tossinvest-Account: accountSeq)
+    GET  /api/v1/transactions  거래내역 (매매·배당·입출금 등, 커서 페이지네이션)
 
 안전 규칙:
 - 조회 전용. 주문·정정·취소 등 다른 엔드포인트는 이 코드에 없다. GET 은 ALLOWED_GET_PATHS 만 허용.
@@ -28,7 +32,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -46,11 +50,15 @@ BASE_URL = "https://openapi.tossinvest.com"
 TOKEN_PATH = "/oauth2/token"
 ACCOUNTS_PATH = "/api/v1/accounts"
 HOLDINGS_PATH = "/api/v1/holdings"
+TRANSACTIONS_PATH = "/api/v1/transactions"
 # 조회 전용 허용 목록. 여기에 없는 경로는 호출하지 않는다.
-ALLOWED_GET_PATHS = frozenset({ACCOUNTS_PATH, HOLDINGS_PATH})
+ALLOWED_GET_PATHS = frozenset({ACCOUNTS_PATH, HOLDINGS_PATH, TRANSACTIONS_PATH})
 
 REQUEST_TIMEOUT = 15
 MAX_RATE_LIMIT_RETRIES = 3
+TX_PAGE_LIMIT = 100          # API 최대
+TX_MAX_PAGES = 50            # 안전장치 (최대 5,000건)
+TX_DEFAULT_DAYS = 10         # 매 실행 시 다시 받는 결제일 구간 (휴일·결제 지연 여유)
 SESSIONS = ("KR_CLOSE", "US_CLOSE")
 
 
@@ -125,7 +133,7 @@ class TossReadOnlyClient:
         self._token = token
         logger.info("토큰 발급 완료")
 
-    def _get(self, path: str, account_seq: int | None = None):
+    def _get(self, path: str, account_seq: int | None = None, params: dict | None = None):
         if path not in ALLOWED_GET_PATHS:
             raise ValueError(f"허용되지 않은 경로: {path}")
         if self._token is None:
@@ -138,7 +146,7 @@ class TossReadOnlyClient:
             headers = {"Authorization": f"Bearer {self._token}"}
             if account_seq is not None:
                 headers["X-Tossinvest-Account"] = str(account_seq)
-            res = self._http.get(BASE_URL + path, headers=headers, timeout=REQUEST_TIMEOUT)
+            res = self._http.get(BASE_URL + path, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
 
             if res.status_code == 200:
                 return res.json().get("result")
@@ -172,6 +180,21 @@ class TossReadOnlyClient:
 
     def get_holdings(self, account_seq: int) -> dict:
         return self._get(HOLDINGS_PATH, account_seq=account_seq) or {}
+
+    def get_transactions(self, account_seq: int, from_date: date) -> list[dict]:
+        """from_date(결제일) 이후 결제분 + 미결제 전체. `to` 를 생략해야 미결제가 포함된다."""
+        out: list[dict] = []
+        cursor = None
+        for _ in range(TX_MAX_PAGES):
+            params = {"from": from_date.isoformat(), "limit": TX_PAGE_LIMIT}
+            if cursor:
+                params["cursor"] = cursor
+            page = self._get(TRANSACTIONS_PATH, account_seq=account_seq, params=params) or {}
+            out.extend(page.get("transactions") or [])
+            if not page.get("hasNext") or not page.get("nextCursor"):
+                return out
+            cursor = page["nextCursor"]
+        raise TossApiError(f"거래내역 페이지가 {TX_MAX_PAGES}쪽을 넘습니다. --tx-from 구간을 줄이세요.")
 
 
 # ─────────────────────────────────────────
@@ -287,9 +310,82 @@ def save_snapshot(conn, snapshot_at: datetime, session: str, suffix: str, accoun
     return acct_id
 
 
+TX_COLS = [
+    "settlement_date", "settled", "transaction_time", "transaction_type", "is_cancellation", "market",
+    "currency", "asset_class", "symbol", "isin_code", "quantity", "filled_price", "amount", "commission",
+    "tax", "net_amount", "exchange_rate",
+]
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).astimezone(KST).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def parse_transactions(txs: list[dict]) -> list[dict]:
+    rows = []
+    for t in txs:
+        rows.append({
+            "settlement_date": date.fromisoformat(t["settlementDate"]),
+            "settled": 1 if t.get("settled") else 0,
+            "transaction_time": _parse_dt(t.get("transactionTime")),
+            "transaction_type": t.get("transactionType") or "",
+            "is_cancellation": 1 if t.get("isCancellation") else 0,
+            "market": t.get("marketCountry") or "",
+            "currency": t.get("currency") or "",
+            "asset_class": t.get("assetClass"),
+            "symbol": t.get("symbol"),
+            "isin_code": t.get("isinCode"),
+            "quantity": dec(t.get("quantity")),
+            "filled_price": dec(t.get("filledPrice")),
+            "amount": dec(t.get("amount")),
+            "commission": dec(t.get("commission")),
+            "tax": dec(t.get("tax")),
+            "net_amount": dec(t.get("netAmount")),
+            "exchange_rate": dec(t.get("exchangeRate")),
+        })
+    return rows
+
+
+def save_transactions(conn, fetched_at: datetime, suffix: str, from_date: date, rows: list[dict]) -> None:
+    """API 에 거래 ID 가 없어, 조회 범위(미결제 전체 + from_date 이후 결제분)를 지우고 다시 넣는다."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM invest_transaction WHERE account_suffix=%s AND (settled=0 OR settlement_date >= %s)",
+            (suffix, from_date),
+        )
+        if rows:
+            cols = ["account_suffix", "fetched_at"] + TX_COLS
+            cur.executemany(
+                f"INSERT INTO invest_transaction ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})",
+                [[suffix, fetched_at] + [r[c] for c in TX_COLS] for r in rows],
+            )
+
+
 # ─────────────────────────────────────────
 # 출력
 # ─────────────────────────────────────────
+def print_transactions(suffix: str, from_date: date, rows: list[dict]) -> None:
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["transaction_type"]] = counts.get(r["transaction_type"], 0) + 1
+    unsettled = sum(1 for r in rows if not r["settled"])
+    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "없음"
+    print(f"\n  거래내역(****{suffix}, 결제일 {from_date}~ + 미결제 {unsettled}건): {summary}")
+    trades = [r for r in rows if r["transaction_type"] in ("BUY", "SELL", "DIVIDEND")][:10]
+    for r in trades:
+        d = 0 if r["currency"] == "KRW" else 2
+        flag = "미결제" if not r["settled"] else "결제"
+        cancel = " (취소)" if r["is_cancellation"] else ""
+        qty = "-" if r["quantity"] is None else _fmt(r["quantity"], 4).rstrip("0").rstrip(".")
+        print(f"  - {r['settlement_date']} {flag:3} {r['transaction_type']:<8}{cancel} {r['market']:2} "
+              f"{(r['symbol'] or '-'):<8} 수량 {qty:>8}  금액 {_fmt(r['amount'], d):>14} {r['currency']}")
+
+
 def _fmt(v, digits=0) -> str:
     if v is None:
         return "-"
@@ -333,6 +429,9 @@ def run(args) -> int:
         logger.warning("조회 가능한 계좌가 없습니다.")
         return 0
 
+    tx_from = (date.fromisoformat(args.tx_from) if args.tx_from
+               else now_kst.date() - timedelta(days=TX_DEFAULT_DAYS))
+
     snapshots = []
     for acc in accounts:
         seq = acc.get("accountSeq")  # accountNo 는 읽지도 저장하지도 않는다
@@ -342,19 +441,28 @@ def run(args) -> int:
         overview = client.get_holdings(seq)
         account, rows = parse_holdings(overview)
         logger.info("계좌 ****%s: 보유 %d종목", suffix, len(rows))
-        snapshots.append((suffix, account, rows))
+        tx_rows = None
+        if not args.no_transactions:
+            tx_rows = parse_transactions(client.get_transactions(seq, tx_from))
+            logger.info("계좌 ****%s: 거래내역 %d건 (결제일 %s~ + 미결제)", suffix, len(tx_rows), tx_from)
+        snapshots.append((suffix, account, rows, tx_rows))
 
     if args.dry_run:
-        for suffix, account, rows in snapshots:
+        for suffix, account, rows, tx_rows in snapshots:
             print_summary(session, suffix, account, rows)
+            if tx_rows is not None:
+                print_transactions(suffix, tx_from, tx_rows)
         print("\n(dry-run: DB 저장 안 함)")
         return 0
 
     conn = get_connection(db_name)
     try:
-        for suffix, account, rows in snapshots:
+        for suffix, account, rows, tx_rows in snapshots:
             acct_id = save_snapshot(conn, now_kst, session, suffix, account, rows)
             logger.info("저장 완료: ****%s account_snapshot_id=%s 종목 %d", suffix, acct_id, len(rows))
+            if tx_rows is not None:
+                save_transactions(conn, now_kst, suffix, tx_from, tx_rows)
+                logger.info("거래내역 저장: ****%s %d건", suffix, len(tx_rows))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -370,6 +478,8 @@ def main() -> None:
     parser.add_argument("--session", choices=SESSIONS, help="미지정 시 실행 시각으로 판별 (12시 전 US_CLOSE)")
     parser.add_argument("--db", help="저장할 DB 이름 (기본 TOSS_SNAPSHOT_DB 또는 riding_db_dev)")
     parser.add_argument("--allow-prod", action="store_true", help="*_dev 가 아닌 DB 에 저장 허용")
+    parser.add_argument("--tx-from", help=f"거래내역 결제일 시작 YYYY-MM-DD (기본 {TX_DEFAULT_DAYS}일 전, 처음 1회는 과거부터 백필)")
+    parser.add_argument("--no-transactions", action="store_true", help="거래내역 조회 생략")
     args = parser.parse_args()
 
     setup_logging()
