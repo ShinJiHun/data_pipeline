@@ -37,6 +37,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pymysql
 import requests
 
 from invest.db import get_env, resolve_db_name, get_connection
@@ -60,6 +61,15 @@ TX_PAGE_LIMIT = 100          # API 최대
 TX_MAX_PAGES = 50            # 안전장치 (최대 5,000건)
 TX_DEFAULT_DAYS = 10         # 매 실행 시 다시 받는 결제일 구간 (휴일·결제 지연 여유)
 SESSIONS = ("KR_CLOSE", "US_CLOSE")
+
+DB_ERROR_HINTS = {
+    1044: "DB_USER 에 이 DB 권한 없음 — GRANT 필요",
+    1045: "DB_USER/DB_PASSWORD 인증 실패",
+    1049: "DB 가 없음 — DB 이름·DB_HOST 확인",
+    1146: "테이블 없음 — invest/schema.sql 을 이 DB 에 적용",
+    2003: "DB_HOST/DB_PORT 접속 불가",
+    2005: "DB_HOST 이름을 찾을 수 없음",
+}
 
 
 # ─────────────────────────────────────────
@@ -486,8 +496,15 @@ def main() -> None:
     try:
         sys.exit(run(args))
     except Exception as e:
-        # TossApiError 메시지는 code/message/requestId 만 담는다. 그 밖의 예외는 타입만 알린다.
-        detail = str(e) if isinstance(e, (TossApiError, EnvironmentError, RuntimeError)) else type(e).__name__
+        # TossApiError 메시지는 code/message/requestId 만 담는다. DB 오류는 에러 번호와 힌트만,
+        # 그 밖의 예외는 타입만 알린다 (접속 정보가 메시지에 섞일 수 있어서).
+        if isinstance(e, pymysql.err.MySQLError):
+            code = e.args[0] if e.args else None
+            detail = f"DB 오류 {type(e).__name__} code={code} ({DB_ERROR_HINTS.get(code, '서버에서 직접 접속해 확인')})"
+        elif isinstance(e, (TossApiError, EnvironmentError, RuntimeError)):
+            detail = str(e)
+        else:
+            detail = type(e).__name__
         logger.error("실패: %s", detail)
         if not args.dry_run:
             notify_slack(f":warning: 토스 계좌 스냅샷 실패 ({os.uname().nodename}): {detail}")
