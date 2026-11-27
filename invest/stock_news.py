@@ -84,6 +84,7 @@ DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 DART_VIEW_URL = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={}"
 DART_DAYS = 7
+CORP_CODE_DEADLINE = 120  # corpCode.xml 다운로드 전체 제한(초)
 DART_CACHE_DIR = Path(os.environ.get("DART_CACHE_DIR", str(LOG_DIR / "cache")))
 
 REQUEST_TIMEOUT = 15
@@ -258,7 +259,7 @@ def fetch_naver(http: requests.Session, target: dict, aliases: dict | None = Non
         params={"query": query, "display": int(cfg.get("display") or NAVER_DISPLAY),
                 "sort": cfg.get("sort") or NEWS_SORT},
         headers={NAVER_ID_HEADER: get_env("NAVER_CLIENT_ID"), NAVER_SECRET_HEADER: get_env("NAVER_CLIENT_SECRET")},
-        timeout=REQUEST_TIMEOUT,
+        timeout=(10, REQUEST_TIMEOUT),
     )
     if res.status_code != 200:
         try:
@@ -298,8 +299,18 @@ def load_corp_codes(http: requests.Session) -> dict[str, str]:
     if cache.exists() and datetime.fromtimestamp(cache.stat().st_mtime, KST).date() == today:
         return json.loads(cache.read_text(encoding="utf-8"))
 
-    res = http.get(DART_CORP_CODE_URL, params={"crtfc_key": get_env("DART_API_KEY")}, timeout=60)
-    data = res.content
+    logger.info("DART corp_code 파일 다운로드 중 (하루 1회, 수 MB)…")
+    started = time.monotonic()
+    res = http.get(DART_CORP_CODE_URL, params={"crtfc_key": get_env("DART_API_KEY")},
+                   timeout=(10, 30), stream=True)
+    chunks = []
+    for chunk in res.iter_content(64 * 1024):
+        chunks.append(chunk)
+        if time.monotonic() - started > CORP_CODE_DEADLINE:
+            res.close()
+            raise RuntimeError(f"DART corpCode 다운로드가 {CORP_CODE_DEADLINE}초를 넘어 중단 (서버→DART 네트워크 확인)")
+    data = b"".join(chunks)
+    logger.info("DART corp_code 다운로드 완료 (%.1f MB, %.0f초)", len(data) / 1e6, time.monotonic() - started)
     if res.status_code != 200 or not zipfile.is_zipfile(io.BytesIO(data)):
         # 키 오류 등은 zip 대신 XML/JSON 상태 메시지로 온다
         status = re.search(rb"<status>(\w+)</status>", data)
@@ -336,7 +347,7 @@ def fetch_dart(http: requests.Session, corp_code: str, today: date) -> list[dict
             "bgn_de": (today - timedelta(days=DART_DAYS)).strftime("%Y%m%d"), "end_de": today.strftime("%Y%m%d"),
             "page_count": 100,
         },
-        timeout=REQUEST_TIMEOUT,
+        timeout=(10, REQUEST_TIMEOUT),
     )
     if res.status_code != 200:
         raise RuntimeError(f"DART list HTTP {res.status_code}")
@@ -474,6 +485,7 @@ def run(args) -> int:
     failed = 0
     try:
         for target in targets:
+            logger.info("%s(%s) 수집 중…", target["name"], target["symbol"])
             naver, naver_total, dart, dropped = [], None, None, []
             try:
                 if not args.skip_naver:
