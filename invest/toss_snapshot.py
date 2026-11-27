@@ -20,6 +20,8 @@ API 명세: https://openapi.tossinvest.com/openapi-docs/latest/openapi.json (v1.
     GET  /api/v1/accounts   계좌 목록 → accountSeq
     GET  /api/v1/holdings   보유 주식 (헤더 X-Tossinvest-Account: accountSeq)
     GET  /api/v1/transactions  거래내역 (매매·배당·입출금 등, 커서 페이지네이션)
+    GET  /api/v1/candles       시세 캔들 (계좌 헤더 없음) — rules_check 에서 사용
+    GET  /api/v1/buying-power  매수 가능 금액 (계좌 헤더 필수, 조회만) — rules_check 에서 사용
 
 안전 규칙:
 - 조회 전용. 주문·정정·취소 등 다른 엔드포인트는 이 코드에 없다. GET 은 ALLOWED_GET_PATHS 만 허용.
@@ -52,8 +54,10 @@ TOKEN_PATH = "/oauth2/token"
 ACCOUNTS_PATH = "/api/v1/accounts"
 HOLDINGS_PATH = "/api/v1/holdings"
 TRANSACTIONS_PATH = "/api/v1/transactions"
-# 조회 전용 허용 목록. 여기에 없는 경로는 호출하지 않는다.
-ALLOWED_GET_PATHS = frozenset({ACCOUNTS_PATH, HOLDINGS_PATH, TRANSACTIONS_PATH})
+CANDLES_PATH = "/api/v1/candles"            # 시세 캔들 (rules_check 의 52주 고점)
+BUYING_POWER_PATH = "/api/v1/buying-power"  # 매수 가능 금액 조회 (rules_check 의 현금). 주문 아님
+# 조회 전용 허용 목록. 여기에 없는 경로는 호출하지 않는다. 주문 관련 경로는 절대 추가하지 않는다.
+ALLOWED_GET_PATHS = frozenset({ACCOUNTS_PATH, HOLDINGS_PATH, TRANSACTIONS_PATH, CANDLES_PATH, BUYING_POWER_PATH})
 
 REQUEST_TIMEOUT = 15
 MAX_RATE_LIMIT_RETRIES = 3
@@ -205,6 +209,17 @@ class TossReadOnlyClient:
                 return out
             cursor = page["nextCursor"]
         raise TossApiError(f"거래내역 페이지가 {TX_MAX_PAGES}쪽을 넘습니다. --tx-from 구간을 줄이세요.")
+
+    def get_candles(self, symbol: str, interval: str = "1d", count: int = 200, before: str | None = None) -> dict:
+        """{candles: [...], nextBefore}. before 의 '+' 는 requests 가 %2B 로 인코딩한다."""
+        params = {"symbol": symbol, "interval": interval, "count": count}
+        if before:
+            params["before"] = before
+        return self._get(CANDLES_PATH, params=params) or {}
+
+    def get_buying_power(self, account_seq: int, currency: str) -> dict:
+        """{currency, cashBuyingPower}. 미수 없이 쓸 수 있는 현금 기준 매수 가능 금액 (조회만)."""
+        return self._get(BUYING_POWER_PATH, account_seq=account_seq, params={"currency": currency}) or {}
 
 
 # ─────────────────────────────────────────

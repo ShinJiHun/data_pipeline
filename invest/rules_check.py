@@ -7,8 +7,13 @@
   - targets           종목코드별 목표 비중(0.40 = 40%). "CASH" 는 현금 목표 비중
   - add_rules         drop_from_avg_step(평단 대비 하락 단계, 0.10 = -10%마다), drop_from_52w_high(52주 고점 대비, 0.20)
   - pause_rules       monthly_buy_limit_krw(이번 달 매수 한도, 원), over_target_pause(목표 비중 이상이면 추가 매수 쉼)
-  - cash_krw          현금(원). DB 에 현금이 없어서 지금은 직접 적는다. null 이면 현금 없이 비중 계산
-  - usd_krw           달러 종목 원화 환산 환율
+  - cash_krw          현금(원). 토스 매수 가능 금액 조회가 실패했을 때만 쓴다. null 이면 현금 없이 비중 계산
+  - usd_krw           달러 종목·달러 현금 원화 환산 환율
+
+토스 API (조회 전용, 실패해도 로그만 남기고 규칙 파일 값으로 계속):
+  - 52주 고점: GET /api/v1/candles 일봉(1d) 최근 365일 highPrice 최댓값 → holdings[].high_52w
+  - 현금:      GET /api/v1/buying-power KRW + USD×usd_krw (모든 계좌 합) → cash_krw 대체
+  - 토큰은 실행당 1번만 발급. DB 모드는 기본 사용(--no-api 로 끔), --holdings-file 모드는 --api 를 줘야 사용
 
 사용법 (저장소 루트에서):
     python -m invest.rules_check --holdings-file invest/fixtures/holdings_sample.json   # DB 없이 (로컬 확인)
@@ -26,8 +31,9 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field, asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -150,6 +156,8 @@ def render(result: dict) -> str:
         head = f"{STATUS_ICON[c['status']]} {c['name']} ({c['symbol']}) 비중 {w} / 목표 {t}"
         if c["drop_from_avg"] is not None:
             head += f" · 평단 대비 {c['drop_from_avg']:+.1%}"
+        if c["drop_from_high"] is not None:
+            head += f" · 52주 고점 대비 {c['drop_from_high']:+.1%}"
         lines.append(head)
         for m in c["met"]:
             lines.append(f"    조건 충족: {m}")
@@ -159,7 +167,8 @@ def render(result: dict) -> str:
             lines.append(f"    데이터 없음: {', '.join(c['missing'])}")
     if result["cash_weight"] is not None:
         ct = f" / 목표 {result['cash_target']:.0%}" if result["cash_target"] is not None else ""
-        lines.append(f"💵 현금 {result['cash_weight']:.1%}{ct}")
+        src = " (토스 매수 가능 금액)" if result.get("cash_source") == "toss" else " (규칙 파일 값)"
+        lines.append(f"💵 현금 {result['cash_krw']:,.0f}원 {result['cash_weight']:.1%}{ct}{src}")
     if result["month_buy_limit_krw"] is not None:
         lines.append(f"🧾 이번 달 매수 {result['month_buy_krw']:,}원 / 한도 {result['month_buy_limit_krw']:,.0f}원")
     lines.append("※ 규칙 조건 계산일 뿐, 매수 권유가 아니에요.")
@@ -220,6 +229,115 @@ def load_from_db(db_name: str) -> tuple[list[dict], list[dict]]:
     return list(merged.values()), month_buys
 
 
+# ─────────────────────────────────────────
+# 토스 API 보강 (조회 전용: 52주 고점 · 매수 가능 금액). 실패하면 로그만 남기고 규칙 파일 값으로 진행
+# ─────────────────────────────────────────
+HIGH_52W_DAYS = 365
+CANDLE_COUNT = 200       # API 최대
+CANDLE_MAX_PAGES = 3     # 200 + 200 이면 1년 거래일을 덮는다. 안전장치
+CANDLE_SLEEP = 0.2       # 종목 사이 대기(초, MARKET_DATA_CHART 한도 여유)
+
+
+def _api_err(e: Exception) -> str:
+    # TossApiError 는 code/message/requestId 만 담는다. 그 밖의 예외는 타입만 (URL·헤더가 섞일 수 있어서)
+    if type(e).__module__.startswith(("requests", "urllib3")):  # requests 예외도 OSError 하위라 먼저 거른다
+        return type(e).__name__
+    if isinstance(e, (EnvironmentError, ImportError)):
+        return f"{type(e).__name__}: {e}"
+    if type(e).__name__ in ("TossApiError", "RuntimeError"):
+        return str(e)
+    return type(e).__name__
+
+
+def _candle_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=KST)
+
+
+def fetch_high_52w(client, symbol: str) -> float | None:
+    """일봉 최근 365일 highPrice 최댓값. 1d·count=200 으로 받고 nextBefore 로 이어 받는다."""
+    cutoff = datetime.now(KST) - timedelta(days=HIGH_52W_DAYS)
+    high, before = None, None
+    for _ in range(CANDLE_MAX_PAGES):
+        page = client.get_candles(symbol, interval="1d", count=CANDLE_COUNT, before=before)
+        candles = page.get("candles") or []
+        reached_cutoff = False
+        for c in candles:
+            ts = _candle_time(c.get("timestamp"))
+            if ts is not None and ts < cutoff:
+                reached_cutoff = True
+                continue
+            try:
+                v = float(c.get("highPrice"))
+            except (TypeError, ValueError):
+                continue
+            high = v if high is None else max(high, v)
+        before = page.get("nextBefore")
+        if reached_cutoff or not before or not candles:
+            break
+    return high
+
+
+def fetch_cash_krw(client, usd_krw: float | None) -> float | None:
+    """모든 계좌의 KRW + USD×환율 매수 가능 금액 합. USD 가 있는데 환율이 없으면 None(규칙 파일 값 사용)."""
+    accounts = client.get_accounts()
+    if not accounts:
+        raise RuntimeError("조회 가능한 계좌 없음")
+    total = 0.0
+    for acc in accounts:
+        seq = acc.get("accountSeq")  # accountNo 는 읽지 않는다
+        if seq is None:
+            continue
+        for currency in ("KRW", "USD"):
+            amount = _f(client.get_buying_power(seq, currency).get("cashBuyingPower")) or 0.0
+            if currency == "USD" and amount:
+                if not usd_krw:
+                    logger.warning("USD 매수 가능 금액이 있는데 규칙 파일에 usd_krw 가 없어 API 현금을 쓰지 않음")
+                    return None
+                amount *= usd_krw
+            total += amount
+    return total
+
+
+def enrich_from_toss(rules: dict, holdings: list[dict]) -> str:
+    """holdings 에 high_52w 를 붙이고, 성공하면 rules['cash_krw'] 를 API 값으로 바꾼다. 현금 출처를 돌려준다."""
+    try:
+        from invest.db import get_env
+        from invest.toss_snapshot import TossReadOnlyClient
+        # 토큰은 키당 1개만 유효 → 이 실행에서 클라이언트 하나로 한 번만 발급해 같이 쓴다
+        client = TossReadOnlyClient(get_env("TOSS_CLIENT_ID"), get_env("TOSS_CLIENT_SECRET"))
+    except Exception as e:
+        logger.warning("토스 API 사용 불가(%s) — 규칙 파일 값으로 진행", _api_err(e))
+        return "rules"
+
+    cash_source = "rules"
+    try:
+        cash = fetch_cash_krw(client, float(rules.get("usd_krw") or 0) or None)
+        if cash is not None:
+            rules["cash_krw"] = cash
+            cash_source = "toss"
+            logger.info("현금(매수 가능 금액) %s원 — 토스 API", f"{cash:,.0f}")
+    except Exception as e:
+        logger.warning("매수 가능 금액 조회 실패(%s) — 규칙 파일 cash_krw 사용", _api_err(e))
+
+    for h in holdings:
+        if h.get("high_52w") is not None:
+            continue
+        try:
+            h["high_52w"] = fetch_high_52w(client, h["symbol"])
+            if h["high_52w"] is None:
+                logger.warning("%s 52주 고점: 캔들 없음", h["symbol"])
+        except Exception as e:
+            logger.warning("%s 52주 고점 조회 실패(%s) — 이 조건은 건너뜀", h["symbol"], _api_err(e))
+        time.sleep(CANDLE_SLEEP)
+    return cash_source
+
+
 def run(args) -> int:
     rules = load_rules(Path(args.rules) if args.rules else RULES_FILE)
     if args.holdings_file:
@@ -234,7 +352,12 @@ def run(args) -> int:
         logger.warning("보유 종목이 없습니다.")
         return 0
 
+    # 파일 모드는 로컬 확인용이라 기본은 API 를 안 부른다 (--api 로 켬). DB 모드는 --no-api 로 끔
+    use_api = args.api if args.holdings_file else not args.no_api
+    cash_source = enrich_from_toss(rules, holdings) if use_api else "rules"
+
     result = evaluate(rules, holdings, month_buys)
+    result["cash_source"] = cash_source
     text = render(result)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str) if args.json else text)
     if args.notify:
@@ -251,6 +374,8 @@ def main() -> None:
     parser.add_argument("--allow-prod", action="store_true", help="*_dev 가 아닌 DB 사용 허용")
     parser.add_argument("--json", action="store_true", help="결과를 JSON 으로 출력 (LifeMetrics 연동용)")
     parser.add_argument("--notify", action="store_true", help="결과를 Slack 으로 보냄")
+    parser.add_argument("--no-api", action="store_true", help="토스 API(52주 고점·매수 가능 금액) 조회 안 함")
+    parser.add_argument("--api", action="store_true", help="--holdings-file 모드에서도 토스 API 조회")
     args = parser.parse_args()
     setup_logging()
     try:
