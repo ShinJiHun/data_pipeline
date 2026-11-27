@@ -31,13 +31,6 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# 경로 설정(INVEST_LOG_DIR · INVEST_RULES_FILE)을 .env 에 적어도 먹도록, 아래 상수보다 먼저 .env 를 읽는다
-try:
-    from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv())
-except ImportError:
-    pass
-
 KST = ZoneInfo("Asia/Seoul")
 LOG_DIR = Path(os.environ.get("INVEST_LOG_DIR", "/mnt/200gb/logs/invest"))
 RULES_FILE = Path(os.environ.get("INVEST_RULES_FILE", str(Path(__file__).with_name("invest_rules.json"))))
