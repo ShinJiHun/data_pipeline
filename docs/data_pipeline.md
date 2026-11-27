@@ -56,7 +56,7 @@ cron·watcher·FastAPI 로 돌며, 결과를 MariaDB(`riding_db` 중심)에 쌓�
 ### 2.4 기타
 - `lotto_parser/`: 로또·연금복권 결과 수집 → `lotto_db`, 카카오 알림 (`run_lotto.sh`, Docker 지원)
 - `youtube_data/`: 유튜브 좋아요 영상 메타데이터 수집
-- `invest/`: 토스증권 Open API 계좌·보유 종목 스냅샷(조회 전용) → `invest_account_snapshot`, `invest_snapshot` (`toss_snapshot.py`), 직전 대비 변화 계산(`snapshot_diff.py`, LifeMetrics "investing" 입력용). 현재 riding_db_dev 에만 테이블 있음
+- `invest/`: 토스증권 Open API 계좌·보유 종목 스냅샷(조회 전용) → `invest_account_snapshot`, `invest_snapshot` (`toss_snapshot.py`), 직전 대비 변화 계산(`snapshot_diff.py`, LifeMetrics "investing" 입력용), 거래내역(`invest_transaction`), 보유 KR 종목 소식(`stock_news.py`: 네이버 뉴스 + DART 공시 → `journal_db.stock_news`). 현재 *_dev 에서 검증 중
 - `common/`: SQLAlchemy 공통(`database.py`, `base.py`, `mixins.py`)
 
 ## 3. 실행 환경

@@ -24,8 +24,9 @@ def get_env(key: str) -> str:
     return val
 
 
-def resolve_db_name(cli_db: str | None, allow_prod: bool) -> str:
-    db_name = cli_db or os.environ.get("TOSS_SNAPSHOT_DB") or DEFAULT_DB
+def resolve_db_name(cli_db: str | None, allow_prod: bool,
+                    env_key: str = "TOSS_SNAPSHOT_DB", default: str = DEFAULT_DB) -> str:
+    db_name = cli_db or os.environ.get(env_key) or default
     if not db_name.endswith("_dev") and not allow_prod:
         raise RuntimeError(
             f"운영 DB({db_name})에는 --allow-prod 없이 쓰지 않습니다. 개발 DB(*_dev)로 먼저 검증하세요."
