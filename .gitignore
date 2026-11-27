@@ -60,3 +60,9 @@ service_account*.json
 
 # 에이전트 전용 venv
 venv-agent/
+
+########################
+# 개인 투자 설정 (공개 저장소에 올리지 않음)
+########################
+invest/invest_rules.json
+invest/stock_news_aliases.json

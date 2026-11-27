@@ -44,7 +44,7 @@ from invest.db import get_env, resolve_db_name, get_connection
 from invest.notify import notify_slack
 
 KST = ZoneInfo("Asia/Seoul")
-LOG_DIR = Path("/mnt/200gb/logs/invest")
+LOG_DIR = Path(os.environ.get("INVEST_LOG_DIR", "/mnt/200gb/logs/invest"))
 logger = logging.getLogger("toss_snapshot")
 
 BASE_URL = "https://openapi.tossinvest.com"

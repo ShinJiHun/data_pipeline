@@ -1,0 +1,17 @@
+{
+  "_설명": "invest_rules.json 으로 복사해서 내 값으로 고치세요 (invest_rules.json 은 git 에 올라가지 않음). 비중은 0.40 = 40%, CASH 는 현금 목표 비중",
+  "targets": {
+    "005930": 0.50,
+    "CASH": 0.50
+  },
+  "add_rules": {
+    "drop_from_avg_step": 0.10,
+    "drop_from_52w_high": 0.20
+  },
+  "pause_rules": {
+    "over_target_pause": true,
+    "monthly_buy_limit_krw": 1000000
+  },
+  "cash_krw": null,
+  "usd_krw": 1390
+}

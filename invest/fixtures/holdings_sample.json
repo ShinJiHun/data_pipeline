@@ -1,0 +1,14 @@
+{
+  "_설명": "rules_check 로컬 확인용 가짜 데이터 (실제 계좌 아님)",
+  "holdings": [
+    {"market": "KR", "symbol": "005930", "name": "삼성전자", "currency": "KRW", "quantity": 50,
+     "avg_price": 70000, "current_price": 61000, "eval_amount": 3050000, "high_52w": 80000},
+    {"market": "KR", "symbol": "000660", "name": "SK하이닉스", "currency": "KRW", "quantity": 15,
+     "avg_price": 180000, "current_price": 212000, "eval_amount": 3180000},
+    {"market": "KR", "symbol": "046970", "name": "우리로", "currency": "KRW", "quantity": 200,
+     "avg_price": 8000, "current_price": 6900, "eval_amount": 1380000, "high_52w": 16200}
+  ],
+  "month_buys": [
+    {"currency": "KRW", "amount": 300000}
+  ]
+}

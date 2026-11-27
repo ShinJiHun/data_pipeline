@@ -19,7 +19,14 @@ crontab 예시 (평일 08:30, 12:30, 18:30 KST — 적용은 관리자 확인 �
     DB_HOST, DB_PORT, DB_USER, DB_PASSWORD
     SLACK_WEBHOOK_URL (--notify 시)
     STOCK_NEWS_DB (기본 journal_db_dev), TOSS_SNAPSHOT_DB (보유 종목 읽을 DB, 기본 riding_db_dev)
-    DART_CACHE_DIR (corp_code 캐시, 기본 /mnt/200gb/logs/invest/cache)
+    DART_CACHE_DIR (corp_code 캐시, 기본 INVEST_LOG_DIR/cache)
+    INVEST_LOG_DIR (로그 폴더, 기본 /mnt/200gb/logs/invest)
+    STOCK_NEWS_SORT (date 기본 / sim), STOCK_NEWS_MATCH (strict 기본 / any)
+    종목별 검색어·키워드·제외어: invest/stock_news_aliases.json
+
+로컬(DB 없이) 확인:
+    python -m invest.stock_news --dry-run --targets "005930:삼성전자,000660:SK하이닉스"
+    → 보유 종목을 DB 대신 --targets(또는 .env STOCK_TARGETS)에서 읽는다. 저장하려면 DB 가 있어야 한다.
 
 안전 규칙:
 - API 키는 로그·출력에 남기지 않는다. DART 키는 쿼리스트링에 들어가므로 requests 예외는 타입만 기록한다.
@@ -46,23 +53,38 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+# 회사망처럼 HTTPS 를 중간에서 검사하는 네트워크에서는 파이썬 기본 인증서 목록으로 검증이 실패한다.
+# truststore 가 설치돼 있으면 OS(Windows·macOS) 인증서 저장소로 검증한다. 검증을 끄지는 않는다.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 from invest.db import get_env, resolve_db_name, get_connection
 from invest.notify import notify_slack
 
 KST = ZoneInfo("Asia/Seoul")
-LOG_DIR = Path("/mnt/200gb/logs/invest")
+# 서버 기본값. 로컬(Windows 등)에서는 .env 의 INVEST_LOG_DIR 로 바꾼다
+LOG_DIR = Path(os.environ.get("INVEST_LOG_DIR", "/mnt/200gb/logs/invest"))
 logger = logging.getLogger("stock_news")
 
 NAVER_NEWS_URL = os.environ.get("NAVER_NEWS_URL", "https://openapi.naver.com/v1/search/news.json")
 NAVER_ID_HEADER = os.environ.get("NAVER_ID_HEADER", "X-Naver-Client-Id")
 NAVER_SECRET_HEADER = os.environ.get("NAVER_SECRET_HEADER", "X-Naver-Client-Secret")
 NAVER_DISPLAY = 20
+# 정렬: date(최신순, 기본) / sim(관련도순)
+NEWS_SORT = os.environ.get("STOCK_NEWS_SORT", "date")
+# 걸러내기: strict(제목에 있거나 요약에 2번 이상, 기본) / any(제목·요약 어디든 한 번)
+NEWS_MATCH = os.environ.get("STOCK_NEWS_MATCH", "strict")
+# 종목별 검색어·키워드·제외어 (흔한 말과 겹치는 종목명, 약칭 등)
+ALIASES_FILE = Path(os.environ.get("STOCK_NEWS_ALIASES", str(Path(__file__).with_name("stock_news_aliases.json"))))
 
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 DART_VIEW_URL = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={}"
 DART_DAYS = 7
-DART_CACHE_DIR = Path(os.environ.get("DART_CACHE_DIR", "/mnt/200gb/logs/invest/cache"))
+DART_CACHE_DIR = Path(os.environ.get("DART_CACHE_DIR", str(LOG_DIR / "cache")))
 
 REQUEST_TIMEOUT = 15
 CALL_SLEEP = 0.3          # 호출 사이 대기(초)
@@ -72,6 +94,45 @@ TITLE_MAX, URL_MAX, PUBLISHER_MAX = 500, 700, 100
 TAG_RE = re.compile(r"<[^>]+>")
 
 
+def safe_error(e: Exception) -> str:
+    """로그용 에러 설명. requests 예외(ConnectionError 는 OSError 라 EnvironmentError 이기도 함) 문자열에는
+    키가 든 URL 이 섞이므로 종류와 원인 종류만 남긴다."""
+    if isinstance(e, requests.RequestException):
+        cause = e.__context__ or e.__cause__
+        reason = getattr(getattr(e, "args", [None])[0], "reason", None) if e.args else None
+        hint = type(reason).__name__ if reason is not None else (type(cause).__name__ if cause else "")
+        if "SSL" in hint or "SSL" in type(e).__name__:
+            hint += " (TLS 검증 실패 — 회사망이면 pip install truststore)"
+        return f"{type(e).__name__}{': ' + hint if hint else ''}"
+    if isinstance(e, (RuntimeError, EnvironmentError)):
+        return str(e)
+    return type(e).__name__
+
+
+# 로그에 찍히기 직전에 키를 한 번 더 가린다 (에러 처리에서 놓친 경우까지 막는 마지막 안전장치)
+SECRET_ENV_KEYS = ("DART_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET",
+                   "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "DB_PASSWORD", "SLACK_WEBHOOK_URL")
+SECRET_PARAM_RE = re.compile(r"(?i)((?:crtfc_key|client_secret|client_id|api_key|token)=)[^&\s'\")]+")
+
+
+def mask_secrets(text: str) -> str:
+    text = SECRET_PARAM_RE.sub(r"\1***", text)
+    for key in SECRET_ENV_KEYS:
+        val = os.environ.get(key)
+        if val and len(val) >= 6:
+            text = text.replace(val, "***")
+    return text
+
+
+class SecretMaskFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        masked = mask_secrets(msg)
+        if masked != msg:
+            record.msg, record.args = masked, None
+        return True
+
+
 def setup_logging() -> None:
     handlers = [logging.StreamHandler()]
     try:
@@ -79,6 +140,8 @@ def setup_logging() -> None:
         handlers.insert(0, logging.FileHandler(LOG_DIR / "stock_news.log", encoding="utf-8"))
     except OSError:
         pass
+    for h in handlers:
+        h.addFilter(SecretMaskFilter())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=handlers)
 
 
@@ -89,6 +152,18 @@ def now_kst() -> datetime:
 # ─────────────────────────────────────────
 # 대상 종목
 # ─────────────────────────────────────────
+def parse_targets(spec: str, symbol: str | None) -> list[dict]:
+    """'005930:삼성전자,000660:SK하이닉스' → [{symbol, name}]. DB 없이 로컬에서 돌릴 때."""
+    rows = []
+    for part in spec.split(","):
+        sym, _, name = part.strip().partition(":")
+        if sym.strip() and name.strip():
+            rows.append({"symbol": sym.strip(), "name": name.strip()})
+    if symbol:
+        rows = [r for r in rows if r["symbol"] == symbol]
+    return rows
+
+
 def load_targets(conn, symbol: str | None) -> list[dict]:
     """계좌별 최신 스냅샷의 KR 보유 종목 (symbol, name). 계좌가 여럿이면 합집합."""
     with conn.cursor() as cur:
@@ -134,11 +209,54 @@ def _pub_kst(pub: str | None) -> datetime | None:
     return dt.astimezone(KST).replace(tzinfo=None)
 
 
-def fetch_naver(http: requests.Session, target: dict) -> tuple[list[dict], int]:
-    """(저장 대상 기사, 받은 전체 건수). 종목명이 제목/요약에 실제로 들어간 기사만 남긴다."""
+def load_aliases() -> dict:
+    """종목별 검색어·키워드·제외어 (invest/stock_news_aliases.json, 없으면 빈 설정)."""
+    try:
+        return json.loads(ALIASES_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        logger.warning("%s 형식 오류 — 별칭 없이 진행: %s", ALIASES_FILE.name, e)
+        return {}
+
+
+def _count(text: str, words: list[str]) -> int:
+    """키워드가 나온 횟수. 'SK하이닉스' 와 '하이닉스' 처럼 겹치는 키워드는 한 번으로 센다(긴 것 우선)."""
+    ws = sorted({_norm(w) for w in words if w}, key=len, reverse=True)
+    if not ws:
+        return 0
+    return len(re.findall("|".join(map(re.escape, ws)), _norm(text)))
+
+
+def match_article(title: str, summary: str, keywords: list[str], exclude: list[str],
+                  mode: str | None = None, context: list[str] | None = None) -> str | None:
+    """남기면 None, 버리면 이유. 제목에 키워드가 있거나, 요약에 2번 이상 나와야 '이 종목 기사'로 본다.
+    (요약에 한 번 스치듯 나오는 기사 — 다른 회사 기사 속 '삼성전자와 협력' 같은 것 — 를 거른다)"""
+    if exclude and _count(title + " " + summary, exclude):
+        return "제외어"
+    # 흔한 말과 겹치는 종목명(예: 우리로)은 주식 관련 말이 같이 있어야 이 종목 이야기로 본다
+    if context and not _count(title + " " + summary, context):
+        return "주식 맥락 없음" if _count(title + " " + summary, keywords) else "키워드 없음"
+    if _count(title, keywords):
+        return None
+    hits = _count(summary, keywords)
+    if (mode or NEWS_MATCH) == "any" and hits:
+        return None
+    if hits >= 2:
+        return None
+    return "요약에만 1번" if hits == 1 else "키워드 없음"
+
+
+def fetch_naver(http: requests.Session, target: dict, aliases: dict | None = None) -> tuple[list[dict], int, list[tuple[str, str]]]:
+    """(저장 대상 기사, 받은 전체 건수, 걸러낸 기사 [(이유, 제목)])."""
+    cfg = (aliases or {}).get(target["symbol"], {})
+    query = cfg.get("query") or target["name"]
+    keywords = cfg.get("keywords") or [target["name"]]
+    exclude = cfg.get("exclude") or []
     res = http.get(
         NAVER_NEWS_URL,
-        params={"query": target["name"], "display": NAVER_DISPLAY, "sort": "date"},
+        params={"query": query, "display": int(cfg.get("display") or NAVER_DISPLAY),
+                "sort": cfg.get("sort") or NEWS_SORT},
         headers={NAVER_ID_HEADER: get_env("NAVER_CLIENT_ID"), NAVER_SECRET_HEADER: get_env("NAVER_CLIENT_SECRET")},
         timeout=REQUEST_TIMEOUT,
     )
@@ -151,12 +269,13 @@ def fetch_naver(http: requests.Session, target: dict) -> tuple[list[dict], int]:
         raise RuntimeError(f"네이버 뉴스 HTTP {res.status_code} {detail}".strip())
 
     items = res.json().get("items") or []
-    key = _norm(target["name"])
-    out = []
+    out, dropped = [], []
     for it in items:
         title = clean_text(it.get("title"))
         summary = clean_text(it.get("description"))
-        if key not in _norm(title) and key not in _norm(summary):
+        reason = match_article(title, summary, keywords, exclude, cfg.get("match"), cfg.get("context"))
+        if reason:
+            dropped.append((reason, title))
             continue
         url = (it.get("originallink") or it.get("link") or "").strip()
         published = _pub_kst(it.get("pubDate"))
@@ -166,7 +285,7 @@ def fetch_naver(http: requests.Session, target: dict) -> tuple[list[dict], int]:
             "source": "NAVER", "title": title[:TITLE_MAX], "summary": summary or None, "url": url,
             "publisher": _publisher(url), "published_at": published, "dart_rcept_no": None,
         })
-    return out, len(items)
+    return out, len(items), dropped
 
 
 # ─────────────────────────────────────────
@@ -283,13 +402,18 @@ def _dedupe(items: list[dict]) -> list[dict]:
 # ─────────────────────────────────────────
 # 출력·알림
 # ─────────────────────────────────────────
-def print_items(target: dict, naver: list[dict], naver_total: int | None, dart: list[dict] | None) -> None:
+def print_items(target: dict, naver: list[dict], naver_total: int | None, dart: list[dict] | None,
+                dropped: list[tuple[str, str]] | None = None) -> None:
     print(f"\n■ {target['name']} ({target['symbol']})")
     if naver_total is not None:
-        print(f"  [네이버] 받은 {naver_total}건 중 종목명 포함 {len(naver)}건")
+        print(f"  [네이버] 받은 {naver_total}건 중 남긴 {len(naver)}건 · 거른 {len(dropped or [])}건")
         for it in naver:
             print(f"   - {it['published_at']:%m-%d %H:%M} {it['publisher'] or '-'} | {it['title']}")
             print(f"     {it['url']}")
+        if dropped:
+            print("  [거른 기사]")
+            for reason, title in dropped:
+                print(f"   x ({reason}) {title[:60]}")
     if dart is not None:
         print(f"  [DART] 최근 {DART_DAYS}일 공시 {len(dart)}건")
         for it in dart:
@@ -313,22 +437,27 @@ def send_notify(new_by_target: list[tuple[dict, list[dict]]]) -> None:
 # main
 # ─────────────────────────────────────────
 def run(args) -> int:
-    holdings_db = resolve_db_name(args.db, args.allow_prod)
+    targets_spec = args.targets or os.environ.get("STOCK_TARGETS")
+    holdings_db = "-" if targets_spec else resolve_db_name(args.db, args.allow_prod)
     news_db = None if args.dry_run else resolve_db_name(
         args.news_db, args.allow_prod, env_key="STOCK_NEWS_DB", default="journal_db_dev")
     logger.info("시작: dry_run=%s holdings_db=%s news_db=%s symbol=%s",
                 args.dry_run, holdings_db, news_db or "-", args.symbol or "전체")
 
-    conn = get_connection(holdings_db)
-    try:
-        targets = load_targets(conn, args.symbol)
-    finally:
-        conn.close()
+    if targets_spec:
+        targets = parse_targets(targets_spec, args.symbol)
+    else:
+        conn = get_connection(holdings_db)
+        try:
+            targets = load_targets(conn, args.symbol)
+        finally:
+            conn.close()
     if not targets:
         logger.warning("대상 KR 보유 종목이 없습니다%s.", f" (--symbol {args.symbol})" if args.symbol else "")
         return 0
     logger.info("대상 %d종목: %s", len(targets), ", ".join(t["symbol"] for t in targets))
 
+    aliases = load_aliases()
     http = requests.Session()
     today = datetime.now(KST).date()
     corp_codes = None
@@ -337,7 +466,7 @@ def run(args) -> int:
             corp_codes = load_corp_codes(http)
         except Exception as e:
             logger.error("DART 매핑 실패 — 공시는 건너뜀: %s",
-                         str(e) if isinstance(e, (RuntimeError, EnvironmentError)) else type(e).__name__)
+                         safe_error(e))
 
     news_conn = None if args.dry_run else get_connection(news_db)
     collected_at = now_kst()
@@ -345,10 +474,10 @@ def run(args) -> int:
     failed = 0
     try:
         for target in targets:
-            naver, naver_total, dart = [], None, None
+            naver, naver_total, dart, dropped = [], None, None, []
             try:
                 if not args.skip_naver:
-                    naver, naver_total = fetch_naver(http, target)
+                    naver, naver_total, dropped = fetch_naver(http, target, aliases)
                     time.sleep(CALL_SLEEP)
                 if corp_codes is not None:
                     corp = corp_codes.get(target["symbol"])
@@ -361,13 +490,13 @@ def run(args) -> int:
             except Exception as e:
                 failed += 1
                 # requests 예외 문자열에는 키가 든 URL 이 섞일 수 있어 타입만 남긴다
-                detail = str(e) if isinstance(e, (RuntimeError, EnvironmentError)) else type(e).__name__
+                detail = safe_error(e)
                 logger.error("%s(%s) 수집 실패 — 건너뜀: %s", target["name"], target["symbol"], detail)
                 continue
 
             items = _dedupe(naver + (dart or []))
             if args.dry_run:
-                print_items(target, naver, naver_total, dart)
+                print_items(target, naver, naver_total, dart, dropped)
                 continue
             try:
                 new = save_items(news_conn, target, items, collected_at)
@@ -398,6 +527,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="보유 종목 소식 수집 (네이버 뉴스 + DART 공시)")
     parser.add_argument("--dry-run", action="store_true", help="저장 없이 출력만")
     parser.add_argument("--symbol", help="한 종목만 (예: 005930)")
+    parser.add_argument("--targets", help='DB 대신 대상 종목 직접 지정 "005930:삼성전자,000660:SK하이닉스" (.env STOCK_TARGETS)')
     parser.add_argument("--notify", action="store_true", help="새 소식이 있으면 Slack 요약 1회")
     parser.add_argument("--db", help="보유 종목을 읽을 DB (기본 TOSS_SNAPSHOT_DB 또는 riding_db_dev)")
     parser.add_argument("--news-db", help="stock_news 저장 DB (기본 STOCK_NEWS_DB 또는 journal_db_dev)")
@@ -412,7 +542,7 @@ def main() -> None:
     except Exception as e:
         code = getattr(e, "args", [None])[0] if type(e).__module__.startswith("pymysql") else None
         detail = (f"DB 오류 code={code}" if code is not None
-                  else str(e) if isinstance(e, (RuntimeError, EnvironmentError)) else type(e).__name__)
+                  else safe_error(e))
         logger.error("실패: %s", detail)
         sys.exit(1)
 
